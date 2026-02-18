@@ -21,6 +21,8 @@
 ≔ DEFAULT_SHELL = "/bin/bash";
 ≔ POLL_INTERVAL_MS = 16;   // ~60fps target
 ≔ SHUTDOWN_TIMEOUT_MS = 3000;
+≔ HMR_CHECK_INTERVAL = 30; // Check every ~500ms (30 * 16ms)
+≔ SELF_PATH = "src/morgoth.sg";
 
 // Box-drawing characters (Unicode)
 ≔ BOX_H  = "─";
@@ -513,6 +515,10 @@ rite main() {
     ≔ mut focus = 0;
     ≔ mut running = true;
 
+    // HMR state
+    ≔ mut hmr_counter = 0;
+    ≔ mut hmr_last_mtime = fs_mtime(SELF_PATH);
+
     // Initial render
     i = 0;
     ⟳ i < len(panes) {
@@ -609,6 +615,17 @@ rite main() {
                 }
             }
             i = i + 1;
+        }
+
+        // HMR: check for source file changes every ~500ms
+        hmr_counter = hmr_counter + 1;
+        ⎇ hmr_counter >= HMR_CHECK_INTERVAL {
+            hmr_counter = 0;
+            ≔ hmr_current_mtime = fs_mtime(SELF_PATH);
+            ⎇ hmr_current_mtime != hmr_last_mtime ∧ hmr_current_mtime > 0 {
+                hmr_last_mtime = hmr_current_mtime;
+                Dev·reload(SELF_PATH);
+            }
         }
 
         // Sleep to avoid busy-waiting
