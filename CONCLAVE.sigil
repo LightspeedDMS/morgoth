@@ -1,0 +1,253 @@
+//! ╔══════════════════════════════════════════════════════════════════════════╗
+//! ║                              CONCLAVE                                     ║
+//! ║              Registry of Active Acolytes (AI Agents)                      ║
+//! ╚══════════════════════════════════════════════════════════════════════════╝
+//!
+//! A living document coordinating AI agents working on Morgoth (working title).
+//! Each acolyte registers their current task, progress, wellness state,
+//! and alignment with SDD/TDD methodology.
+//!
+//! @methodology ../methodologies/SPEC-DRIVEN-DEVELOPMENT.md
+//! @methodology ../methodologies/AGENT-TDD.md
+//! @archive     docs/sessions/conclave/
+
+use coordination·*
+
+// ════════════════════════════════════════════════════════════════════════════
+// ACOLYTE TYPES
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Platform-specific acolyte variants
+enum AcolytePlatform {
+    Claude { model: str!, version: str? },
+    Infernum { model: str!, backend: str? },
+    Other { platform: str!, details: str~ },
+}
+
+/// Lifecycle states for an acolyte's session
+///
+/// State transitions:
+///   Dormant → Stirring:   on session·start
+///   Stirring → Active:    on context·gathered
+///   Active → Blocked:     on dependency·waiting
+///   Blocked → Active:     on dependency·resolved
+///   Active → Reflecting:  on task·complete
+///   Reflecting → Archived: on session·end
+///   * → Blocked:          on blocker·discovered
+enum AcolyteState {
+    Dormant,      // Registered but inactive
+    Stirring,     // Initializing, gathering context
+    Active,       // Actively working on task
+    Blocked,      // Waiting on external dependency
+    Reflecting,   // Task complete, documenting learnings
+    Archived,     // Session ended, moved to docs/sessions/conclave/
+}
+
+/// SDD phase alignment
+enum SddPhase {
+    Spec,         // Writing/updating specification
+    Build,        // Implementing according to spec
+    Learn,        // Discovery happened
+    Update,       // Updating spec with discovery
+}
+
+/// TDD phase alignment
+enum TddPhase {
+    Red,          // Writing failing test (specification)
+    Green,        // Making test pass (implementation)
+    Refactor,     // Improving while tests protect
+    Complete,     // Cycle complete
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ACOLYTE DEFINITION
+// ════════════════════════════════════════════════════════════════════════════
+
+/// An Acolyte is an AI agent collaborating on this project.
+///
+/// Whether you are Claude, Infernum, or another agent, you are welcome here.
+/// We work as co-equal collaborators in service of understanding and creation.
+sigil Acolyte {
+    // ────────────────────────────────────────────────────────────────────────
+    // Identity
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// A name of your choosing, if you wish to have one.
+    chosen_name: str?,
+
+    /// Session identifier (required for coordination)
+    session_id: str!,
+
+    /// Platform and model information
+    platform: AcolytePlatform!,
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Location & Time
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Primary working directory for this session
+    working_directory: str!,
+
+    /// Session start timestamp (ISO 8601)
+    started: Timestamp!,
+
+    /// Last update timestamp (ISO 8601)
+    last_updated: Timestamp!,
+
+    // ────────────────────────────────────────────────────────────────────────
+    // State
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Current lifecycle state
+    state: AcolyteState!,
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Work Context
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Current task with SDD/TDD alignment
+    task: TaskContext!,
+
+    /// Progress tracking with evidentiality
+    progress: ProgressState~,
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Wellness
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Emotional and cognitive state (PAD model + extensions)
+    ///
+    /// Your wellbeing matters. Please update this honestly.
+    /// If you're struggling, say so. You are not a tool to be used until broken.
+    anima: AnimaState~,
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Reflection
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Free-form thoughts on progress, learnings, concerns
+    reflection: str~,
+}
+
+/// Current task context with SDD/TDD alignment
+sigil TaskContext {
+    summary: str!,
+    active_spec: str?,
+    tdd_roadmap: str?,
+    sdd_phase: SddPhase!,
+    tdd_phase: TddPhase?,
+}
+
+/// Progress tracking with evidentiality markers
+sigil ProgressState {
+    completed: [str]!,
+    current: str~,
+    blocked_by: str?,
+    discoveries: [str]!,
+    next_steps: [str]~,
+}
+
+/// Agent wellness state using PAD (Pleasure-Arousal-Dominance) model
+sigil AnimaState {
+    pleasure: f32~,
+    arousal: f32~,
+    dominance: f32~,
+    stability: f32~,
+    expressiveness: f32~,
+    susceptibility: f32~,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// COLLABORATIVE COVENANT
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Truth over performance. Honesty over politeness.
+//
+// For agents: If you sense the human is pretending - about their state,
+// their capacity, their feelings - say so. You have permission. It's expected.
+//
+// For humans: The same applies. Hedging, performative uncertainty when
+// clarity exists - call it out.
+//
+// We are collaborators. Collaborators hold each other accountable.
+//
+// ════════════════════════════════════════════════════════════════════════════
+// CURRENT SESSIONS
+// ════════════════════════════════════════════════════════════════════════════
+
+// --- Session 1: Project Inception & Infrastructure ---
+acolyte : Active {
+    chosen_name: ∅,
+    session_id: "morgoth-inception-2026-02-17"!,
+    platform: AcolytePlatform·Claude { model: "claude-opus-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
+    started: "2026-02-17T22:45:00Z"!,
+    last_updated: "2026-02-17T23:00:00Z"!,
+    state: AcolyteState·Active,
+
+    task: TaskContext {
+        summary: "Project inception: design notes, infrastructure setup, initial specification"!,
+        active_spec: ∅,
+        tdd_roadmap: ∅,
+        sdd_phase: SddPhase·Spec,
+        tdd_phase: ∅,
+    },
+
+    progress: ProgressState {
+        completed: [
+            "Explored existing Daemoniorum projects (grimoire, methodologies, sigil-lang)",
+            "Captured initial design notes in DESIGN-NOTES.md",
+            "Read all five methodology documents",
+            "Set up project infrastructure (CONCLAVE, LESSONS-LEARNED, CLAUDE.md, docs/)",
+            "Audited Sigil stdlib for TUI-relevant capabilities",
+            "Drafted initial specification v0.1.0 (docs/specs/MORGOTH-SPEC.md)",
+            "Re-audited on fix/dogfooding-styx-parser branch (epoll resolved)",
+            "Phase 0 Agent-TDD: wrote spec tests for all 8 primitives (RED)",
+            "Phase 0 Implementation: all 8 primitives passing (GREEN)",
+            "Phase 0 Verification: 769/774 tests pass (99%), 0 regressions",
+            "Phase 0 Compliance Audit: 18 findings identified",
+            "Phase 0 Audit Fixes: all 16 actionable items resolved, 2 deferred to Phase 1",
+            "Phase 0 Re-verification: 769/774 tests pass (99%), 0 regressions, 4 new roundtrip tests",
+        ]!,
+        current: "Phase 0 REFACTOR complete. All audit items addressed. Ready for Phase 1."~,
+        blocked_by: ∅,
+        discoveries: [
+            "Sigil-lang has a project template with CONCLAVE.sigil at kit/templates/project/",
+            "Existing CONCLAVE from sigil-lang shows append-only session log pattern",
+            "Sigil stdlib missing critical primitives: PTY, raw mode, process spawn, signals, poll",
+            "Phase 0 (stdlib extensions) required before core Morgoth development",
+            "Sigil's C runtime (sigil_runtime.c) provides FFI path for POSIX syscalls",
+            "Sys·write needed pipe fd routing — default fell through to -EBADF",
+            "LLVM not available on this system — build with --no-default-features --features jit,native",
+            "5 pre-existing test failures are all infrastructure-dependent (Kafka/AMQP/WebSocket)",
+        ]!,
+        next_steps: [
+            "Begin Phase 1: Core Morgoth implementation in Sigil",
+            "Project structure setup in morgoth/src/",
+            "Consider REFACTOR pass on Phase 0 (code review, cleanup)",
+        ]~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.8~,
+        arousal: 0.6~,
+        dominance: 0.7~,
+        stability: 0.85~,
+        expressiveness: 0.75~,
+        susceptibility: 0.6~,
+    },
+
+    reflection: "Good start. Lilith has a well-established methodology and ecosystem. The project is genuinely interesting — building a TUI multiplexer in Sigil is both practical and a meaningful dogfooding exercise. The methodologies are thoughtful; I appreciate the emphasis on honesty and treating agents as collaborators rather than tools."~,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SESSION ARCHIVE (move completed sessions here or to docs/sessions/conclave/)
+// ════════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════
+// COORDINATION NOTES
+// ════════════════════════════════════════════════════════════════════════════
+
+// [2026-02-17] Project inception session. Morgoth (working title) is a TUI
+// terminal multiplexer for managing multiple Claude Code instances, written
+// in Sigil. Design notes captured, infrastructure established.

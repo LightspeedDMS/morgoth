@@ -1,0 +1,621 @@
+// ============================================================================
+// Morgoth — Terminal Multiplexer for Claude Code
+// Written in Sigil
+//
+// Phase 1: Core Implementation
+// - Single and multi-pane terminal with PTY management
+// - Grid-based layout engine
+// - Diff-based rendering with box-drawing borders
+// - Leader key input routing
+// - Graceful shutdown with signal handling
+// ============================================================================
+
+// ============================================================================
+// Section 1: Constants
+// ============================================================================
+
+≔ VERSION = "0.1.0";
+≔ LEADER_KEY = 2;          // Ctrl-B (0x02)
+≔ ESC = "\x1b";
+≔ CSI = "\x1b[";
+≔ DEFAULT_SHELL = "/bin/bash";
+≔ POLL_INTERVAL_MS = 16;   // ~60fps target
+≔ SHUTDOWN_TIMEOUT_MS = 3000;
+
+// Box-drawing characters (Unicode)
+≔ BOX_H  = "─";
+≔ BOX_V  = "│";
+≔ BOX_TL = "┌";
+≔ BOX_TR = "┐";
+≔ BOX_BL = "└";
+≔ BOX_BR = "┘";
+≔ BOX_TJ = "┬";
+≔ BOX_BJ = "┴";
+≔ BOX_LJ = "├";
+≔ BOX_RJ = "┤";
+≔ BOX_X  = "┼";
+
+// ============================================================================
+// Section 2: Data Structures
+// ============================================================================
+
+// A Cell in the screen buffer
+rite Cell·new(ch, fg, bg, dirty) {
+    ≔ cell = {
+        ch: ch,
+        fg: fg,
+        bg: bg,
+        dirty: dirty
+    };
+    ↩ cell
+}
+
+// A rectangular region on screen
+rite Region·new(x, y, w, h) {
+    ≔ r = {
+        x: x,
+        y: y,
+        w: w,
+        h: h
+    };
+    ↩ r
+}
+
+// A Pane: owns a PTY, a shell process, and a screen region
+rite Pane·new(id, region) {
+    ≔ pty = Pty·open();
+    Pty·set_size(pty.master_fd, region.h, region.w);
+
+    ≔ pid = Sys·spawn_pty(DEFAULT_SHELL, [], pty.slave_fd);
+
+    ≔ pane = {
+        id: id,
+        region: region,
+        master_fd: pty.master_fd,
+        slave_fd: pty.slave_fd,
+        pid: pid,
+        alive: true,
+        title: "bash"
+    };
+    ↩ pane
+}
+
+// ============================================================================
+// Section 3: Layout Engine
+// ============================================================================
+
+// Calculate grid layout regions for a rows x cols grid
+// screen_w, screen_h = total terminal dimensions
+// Returns array of Region structs (row-major order)
+// Bottom row reserved for status bar
+rite layout_grid(rows, cols, screen_w, screen_h) {
+    ≔ usable_h = screen_h - 1;  // Reserve status bar
+
+    ≔ base_h = usable_h / rows;
+    ≔ remainder_h = usable_h % rows;
+
+    ≔ base_w = screen_w / cols;
+    ≔ remainder_w = screen_w % cols;
+
+    ≔ regions = [];
+    ≔ y_offset = 0;
+
+    ≔ mut r = 0;
+    ⟳ r < rows {
+        ≔ h = base_h;
+        // Give remainder to last row
+        ⎇ r == rows - 1 {
+            h = base_h + remainder_h;
+        }
+
+        ≔ x_offset = 0;
+        ≔ mut c = 0;
+        ⟳ c < cols {
+            ≔ w = base_w;
+            // Give remainder to last column
+            ⎇ c == cols - 1 {
+                w = base_w + remainder_w;
+            }
+
+            regions = regions + [Region·new(x_offset, y_offset, w, h)];
+
+            x_offset = x_offset + w;
+            c = c + 1;
+        }
+
+        y_offset = y_offset + h;
+        r = r + 1;
+    }
+
+    ↩ regions
+}
+
+// ============================================================================
+// Section 4: Screen Buffer (Grid)
+// ============================================================================
+
+// Create a flat cell buffer for the screen
+rite Grid·new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        cells = cells + [Cell·new(" ", 7, 0, true)];
+        i = i + 1;
+    }
+    ≔ grid = {
+        rows: rows,
+        cols: cols,
+        cells: cells
+    };
+    ↩ grid
+}
+
+// Set a cell at (row, col) in the grid
+rite Grid·set(grid, row, col, ch, fg, bg) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        grid.cells[idx] = Cell·new(ch, fg, bg, true);
+    }
+}
+
+// Get a cell at (row, col)
+rite Grid·get(grid, row, col) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        ↩ grid.cells[idx]
+    }
+    ↩ Cell·new(" ", 7, 0, false)
+}
+
+// Count dirty cells
+rite Grid·dirty_count(grid) {
+    ≔ mut count = 0;
+    ≔ total = grid.rows * grid.cols;
+    ≔ mut i = 0;
+    ⟳ i < total {
+        ⎇ grid.cells[i].dirty == true {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    ↩ count
+}
+
+// Clear all dirty flags
+rite Grid·clear_dirty(grid) {
+    ≔ total = grid.rows * grid.cols;
+    ≔ mut i = 0;
+    ⟳ i < total {
+        grid.cells[i] = Cell·new(grid.cells[i].ch, grid.cells[i].fg, grid.cells[i].bg, false);
+        i = i + 1;
+    }
+}
+
+// ============================================================================
+// Section 5: Rendering
+// ============================================================================
+
+// Draw a border around a region in the grid
+rite render_border(grid, region, title) {
+    ≔ x = region.x;
+    ≔ y = region.y;
+    ≔ w = region.w;
+    ≔ h = region.h;
+
+    // Top edge
+    Grid·set(grid, y, x, BOX_TL, 6, 0);
+    ≔ mut c = 1;
+    ⟳ c < w - 1 {
+        Grid·set(grid, y, x + c, BOX_H, 6, 0);
+        c = c + 1;
+    }
+    Grid·set(grid, y, x + w - 1, BOX_TR, 6, 0);
+
+    // Bottom edge
+    Grid·set(grid, y + h - 1, x, BOX_BL, 6, 0);
+    c = 1;
+    ⟳ c < w - 1 {
+        Grid·set(grid, y + h - 1, x + c, BOX_H, 6, 0);
+        c = c + 1;
+    }
+    Grid·set(grid, y + h - 1, x + w - 1, BOX_BR, 6, 0);
+
+    // Side edges
+    ≔ mut r = 1;
+    ⟳ r < h - 1 {
+        Grid·set(grid, y + r, x, BOX_V, 6, 0);
+        Grid·set(grid, y + r, x + w - 1, BOX_V, 6, 0);
+        r = r + 1;
+    }
+
+    // Title in top border (if provided and fits)
+    ⎇ title != "" {
+        ≔ max_title_len = w - 4;
+        ⎇ max_title_len > 0 {
+            ≔ mut ti = 0;
+            ⟳ ti < max_title_len ∧ ti < len(title) {
+                Grid·set(grid, y, x + 2 + ti, substr(title, ti, 1), 15, 0);
+                ti = ti + 1;
+            }
+        }
+    }
+}
+
+// Write text content into the interior of a region
+rite render_content(grid, region, text) {
+    ≔ inner_x = region.x + 1;
+    ≔ inner_y = region.y + 1;
+    ≔ inner_w = region.w - 2;
+    ≔ inner_h = region.h - 2;
+
+    ≔ mut row = 0;
+    ≔ mut col = 0;
+    ≔ mut i = 0;
+    ⟳ i < len(text) ∧ row < inner_h {
+        ≔ ch = substr(text, i, 1);
+        ⎇ ch == "\n" {
+            row = row + 1;
+            col = 0;
+        } ⎉ {
+            ⎇ col < inner_w {
+                Grid·set(grid, inner_y + row, inner_x + col, ch, 7, 0);
+                col = col + 1;
+            }
+        }
+        i = i + 1;
+    }
+}
+
+// Render status bar at the bottom of the grid
+rite render_status_bar(grid, text) {
+    ≔ row = grid.rows - 1;
+    ≔ mut c = 0;
+    // Fill with inverse video spaces
+    ⟳ c < grid.cols {
+        Grid·set(grid, row, c, " ", 0, 7);
+        c = c + 1;
+    }
+    // Write status text
+    ≔ mut i = 0;
+    ⟳ i < len(text) ∧ i < grid.cols {
+        Grid·set(grid, row, i, substr(text, i, 1), 0, 7);
+        i = i + 1;
+    }
+}
+
+// Flush only dirty cells to stdout using ANSI escape sequences
+rite flush_dirty(grid) {
+    ≔ mut buf = "";
+    ≔ total = grid.rows * grid.cols;
+    ≔ mut i = 0;
+    ⟳ i < total {
+        ⎇ grid.cells[i].dirty == true {
+            ≔ row = i / grid.cols;
+            ≔ col = i % grid.cols;
+            // Move cursor: ESC[row;colH (1-indexed)
+            buf = buf + CSI + to_string(row + 1) + ";" + to_string(col + 1) + "H";
+            // Set colors
+            buf = buf + CSI + "38;5;" + to_string(grid.cells[i].fg) + "m";
+            buf = buf + CSI + "48;5;" + to_string(grid.cells[i].bg) + "m";
+            // Write character
+            buf = buf + grid.cells[i].ch;
+        }
+        i = i + 1;
+    }
+    // Reset colors
+    buf = buf + CSI + "0m";
+    ⎇ buf != CSI + "0m" {
+        Sys·write(1, buf, len(buf));
+    }
+    Grid·clear_dirty(grid);
+}
+
+// ============================================================================
+// Section 6: Input Handling
+// ============================================================================
+
+// Input state machine
+rite InputState·new() {
+    ≔ state = {
+        leader_active: false,
+        mouse_mode: true,
+        escape_buf: "",
+        in_escape: false
+    };
+    ↩ state
+}
+
+// Process a single input byte, returns action string
+// Actions: "passthrough", "leader_activate", "focus_next", "focus_prev",
+//          "quit", "none", "mouse:X:Y"
+rite process_input(input_state, byte, pane_count) {
+    // In escape sequence
+    ⎇ input_state.in_escape == true {
+        input_state.escape_buf = input_state.escape_buf + chr(byte);
+        // Check for mouse SGR: ESC[<Btn;X;YM or m
+        ⎇ byte == 77 ∨ byte == 109 {
+            // Parse mouse event (simplified)
+            ≔ result = "mouse:" + input_state.escape_buf;
+            input_state.in_escape = false;
+            input_state.escape_buf = "";
+            ↩ result
+        }
+        // Check for end of escape sequence
+        ⎇ byte >= 64 ∧ byte <= 126 {
+            input_state.in_escape = false;
+            input_state.escape_buf = "";
+        }
+        ↩ "none"
+    }
+
+    // ESC byte starts escape sequence
+    ⎇ byte == 27 {
+        input_state.in_escape = true;
+        input_state.escape_buf = "";
+        ↩ "none"
+    }
+
+    // Leader mode handling
+    ⎇ input_state.leader_active == true {
+        input_state.leader_active = false;
+
+        // 'n' = next pane
+        ⎇ byte == 110 {
+            ↩ "focus_next"
+        }
+        // 'p' = previous pane
+        ⎇ byte == 112 {
+            ↩ "focus_prev"
+        }
+        // 'q' = quit
+        ⎇ byte == 113 {
+            ↩ "quit"
+        }
+        // 'c' = new pane (future)
+        // 'x' = close pane (future)
+        ↩ "none"
+    }
+
+    // Leader key (Ctrl-B)
+    ⎇ byte == LEADER_KEY {
+        input_state.leader_active = true;
+        ↩ "leader_activate"
+    }
+
+    // Normal key — passthrough to focused pane
+    ↩ "passthrough"
+}
+
+// Find which pane a mouse click at (mx, my) belongs to
+rite find_pane_at(panes, mx, my) {
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ≔ r = panes[i].region;
+        ⎇ mx >= r.x ∧ mx < r.x + r.w ∧ my >= r.y ∧ my < r.y + r.h {
+            ↩ i
+        }
+        i = i + 1;
+    }
+    ↩ -1
+}
+
+// ============================================================================
+// Section 7: Terminal Control
+// ============================================================================
+
+rite terminal_init() {
+    // Enter alt screen
+    Sys·write(1, ESC + "[?1049h", 8);
+    // Enable mouse tracking (SGR mode)
+    Sys·write(1, ESC + "[?1006h", 8);
+    Sys·write(1, ESC + "[?1003h", 8);
+    // Hide cursor
+    Sys·write(1, ESC + "[?25l", 6);
+    // Clear screen
+    Sys·write(1, ESC + "[2J", 4);
+}
+
+rite terminal_shutdown() {
+    // Show cursor
+    Sys·write(1, ESC + "[?25h", 6);
+    // Disable mouse tracking
+    Sys·write(1, ESC + "[?1003l", 8);
+    Sys·write(1, ESC + "[?1006l", 8);
+    // Leave alt screen
+    Sys·write(1, ESC + "[?1049l", 8);
+}
+
+// ============================================================================
+// Section 8: Shutdown
+// ============================================================================
+
+rite shutdown_panes(panes) {
+    // Phase 1: Send SIGTERM to all children
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ⎇ panes[i].alive == true {
+            Sys·kill(panes[i].pid, SIGTERM());
+        }
+        i = i + 1;
+    }
+
+    // Phase 2: Wait briefly for graceful exit
+    // In real mode, we'd loop checking waitpid with WNOHANG
+    // For now, do a single waitpid pass
+    i = 0;
+    ⟳ i < len(panes) {
+        ⎇ panes[i].alive == true {
+            ≔ wait = Sys·waitpid(panes[i].pid, WNOHANG());
+            ⎇ wait.pid > 0 {
+                panes[i].alive = false;
+            }
+        }
+        i = i + 1;
+    }
+
+    // Phase 3: SIGKILL any remaining
+    i = 0;
+    ⟳ i < len(panes) {
+        ⎇ panes[i].alive == true {
+            Sys·kill(panes[i].pid, SIGKILL());
+            Sys·waitpid(panes[i].pid, 0);
+            panes[i].alive = false;
+        }
+        i = i + 1;
+    }
+
+    // Close all PTY fds
+    i = 0;
+    ⟳ i < len(panes) {
+        Sys·close(panes[i].master_fd);
+        Sys·close(panes[i].slave_fd);
+        i = i + 1;
+    }
+}
+
+// ============================================================================
+// Section 9: Main Event Loop
+// ============================================================================
+
+rite main() {
+    // Configuration (hardcoded for Phase 1)
+    ≔ grid_rows = 2;
+    ≔ grid_cols = 3;
+    ≔ screen_w = 80;
+    ≔ screen_h = 24;
+
+    // Initialize terminal
+    terminal_init();
+
+    // Register signal handlers
+    Sys·signal_register(SIGWINCH());
+    Sys·signal_register(SIGTERM());
+    Sys·signal_register(SIGINT());
+    Sys·signal_register(SIGCHLD());
+
+    // Calculate layout
+    ≔ regions = layout_grid(grid_rows, grid_cols, screen_w, screen_h);
+
+    // Create panes
+    ≔ panes = [];
+    ≔ mut i = 0;
+    ⟳ i < len(regions) {
+        panes = panes + [Pane·new(i, regions[i])];
+        i = i + 1;
+    }
+
+    // Create screen buffer
+    ≔ screen = Grid·new(screen_h, screen_w);
+
+    // Input state
+    ≔ input = InputState·new();
+    ≔ mut focus = 0;
+    ≔ mut running = true;
+
+    // Initial render
+    i = 0;
+    ⟳ i < len(panes) {
+        ≔ title = panes[i].title;
+        ⎇ i == focus {
+            title = "[" + title + "]";
+        }
+        render_border(screen, panes[i].region, title);
+        i = i + 1;
+    }
+    render_status_bar(screen, " Morgoth v" + VERSION + " | Ctrl-B: leader | q: quit | n/p: focus");
+    flush_dirty(screen);
+
+    // Main event loop
+    ⟳ running == true {
+        // Check for signals
+        ⎇ Sys·signal_pending(SIGTERM()) == true ∨ Sys·signal_pending(SIGINT()) == true {
+            running = false;
+        }
+
+        // Check for SIGWINCH (terminal resize)
+        ⎇ Sys·signal_pending(SIGWINCH()) == true {
+            // TODO: Re-query terminal size, recalculate layout
+            // For now, just acknowledge
+        }
+
+        // Poll stdin for user input
+        ⎇ Sys·poll_fd(0, 0) == true {
+            ≔ input_data = Sys·read_string(0, 256);
+            ⎇ input_data != "" {
+                // Process each byte
+                ≔ mut bi = 0;
+                ⟳ bi < len(input_data) {
+                    ≔ byte = ord(substr(input_data, bi, 1));
+                    ≔ action = process_input(input, byte, len(panes));
+
+                    ⎇ action == "quit" {
+                        running = false;
+                    }
+                    ⎇ action == "focus_next" {
+                        focus = (focus + 1) % len(panes);
+                        // Re-render borders to show focus
+                        ≔ mut pi = 0;
+                        ⟳ pi < len(panes) {
+                            ≔ t = panes[pi].title;
+                            ⎇ pi == focus {
+                                t = "[" + t + "]";
+                            }
+                            render_border(screen, panes[pi].region, t);
+                            pi = pi + 1;
+                        }
+                        flush_dirty(screen);
+                    }
+                    ⎇ action == "focus_prev" {
+                        ⎇ focus == 0 {
+                            focus = len(panes) - 1;
+                        } ⎉ {
+                            focus = focus - 1;
+                        }
+                        // Re-render borders
+                        ≔ mut pi = 0;
+                        ⟳ pi < len(panes) {
+                            ≔ t = panes[pi].title;
+                            ⎇ pi == focus {
+                                t = "[" + t + "]";
+                            }
+                            render_border(screen, panes[pi].region, t);
+                            pi = pi + 1;
+                        }
+                        flush_dirty(screen);
+                    }
+                    ⎇ action == "passthrough" {
+                        // Forward to focused pane's PTY master
+                        ≔ ch = substr(input_data, bi, 1);
+                        Sys·write(panes[focus].master_fd, ch, 1);
+                    }
+
+                    bi = bi + 1;
+                }
+            }
+        }
+
+        // Poll each pane's PTY for output
+        i = 0;
+        ⟳ i < len(panes) {
+            ⎇ panes[i].alive == true {
+                ⎇ Sys·poll_fd(panes[i].master_fd, 0) == true {
+                    ≔ pty_data = Sys·read_string(panes[i].master_fd, 4096);
+                    ⎇ pty_data != "" {
+                        // Render PTY output into pane's region
+                        render_content(screen, panes[i].region, pty_data);
+                        flush_dirty(screen);
+                    }
+                }
+            }
+            i = i + 1;
+        }
+
+        // Sleep to avoid busy-waiting
+        Sys·clock_gettime();  // Small delay (nanosecond resolution, but keeps loop responsive)
+    }
+
+    // Shutdown
+    shutdown_panes(panes);
+    terminal_shutdown();
+}
