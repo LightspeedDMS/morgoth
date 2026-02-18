@@ -222,3 +222,59 @@ on the stdin environment.
 
 **Lesson:** When adding native syscall fallbacks, audit all tests that rely on
 specific fd behavior. Tests run in piped environments, not real terminals.
+
+---
+
+## LL-012: Flat ⎇ Blocks Cause State Machine Fall-Through
+
+**When:** Phase 3 code review (Feb 2026)
+**Severity:** P0 — broke ALL escape sequences in production morgoth.sg
+
+**Problem:** vterm_feed used flat (independent) `⎇` blocks for each state:
+
+```sigil
+⎇ vt.esc_state == "normal" { ... }   // sets state = "escape"
+⎇ vt.esc_state == "escape" { ... }   // FIRES SAME ITERATION — resets to "normal"
+⎇ vt.esc_state == "csi" { ... }
+```
+
+Each `⎇` is evaluated independently. When the normal handler sets
+`esc_state = "escape"`, the escape handler immediately fires on the SAME byte,
+resetting state to "normal". Result: ESC is consumed and discarded, no CSI/OSC/DCS
+sequence can ever be entered.
+
+**Why not caught:** All test files define their OWN `vterm_feed` with correct
+`⎇`/`⎉` chains. They never exercise the production code in morgoth.sg.
+
+**Fix:** Replace flat `⎇` with a single `⎇`/`⎉` chain so exactly one state
+handler fires per byte:
+
+```sigil
+⎇ vt.esc_state == "csi" { ... }
+⎉ { ⎇ vt.esc_state == "osc" { ... }
+⎉ { ⎇ vt.esc_state == "escape" { ... }
+⎉ { /* normal */ } } }
+```
+
+**Prevention:** Added integration test P3_350 that uses the production `⎇`/`⎉`
+chain structure to catch divergence between test copies and production code.
+
+**Rule:** In Sigil, NEVER use flat `⎇` blocks when one handler can change
+the state variable checked by a subsequent handler. Always use `⎇`/`⎉` chains
+for state machines and dispatch tables.
+
+---
+
+## LL-013: starts_with() Fails Type Inference on Implicit Returns
+
+**When:** Phase 3 test fixes (Feb 2026)
+**Severity:** P2 — type checker bug, workaround available
+
+**Problem:** `starts_with(fn_result, prefix)` fails with "type mismatch:
+expected str, found ()" when the function returns a string via implicit return
+(`result` as last expression). Direct `==` comparison and `println()` work fine.
+
+**Workaround:** Coerce with string concatenation: `≔ res = "" + fn_call();`
+
+**Rule:** When passing an implicit return value to `starts_with()`, `contains()`,
+or similar stdlib functions, force the type with `"" + expr`.
