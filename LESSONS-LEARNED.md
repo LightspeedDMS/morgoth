@@ -79,3 +79,146 @@ fails with "No suitable version of LLVM was found."
 
 **Fix:** Build with `--no-default-features --features jit,native` to use
 Cranelift JIT backend instead of LLVM.
+
+---
+
+## LL-005: Sigil String API — Functions That Don't Exist
+
+**Date:** 2026-02-18
+**Phase:** Phase 2 (VTerm, rendering)
+**Severity:** Critical
+
+The following commonly-assumed string functions do NOT exist in Sigil:
+
+| Assumed | Actual | Notes |
+|---------|--------|-------|
+| `substr(s, start, len)` | `substring(s, start, end)` | End index, not length |
+| `chr(n)` | `from_char_code(n)` | Integer to string |
+| `ord(s)` | `char_code_at(s, idx)` | Returns integer code at index |
+
+These were used freely in morgoth.sg's rendering functions (render_border,
+render_content, render_status_bar) and input processing (process_input). All
+crashed at runtime.
+
+**Lesson:** Before writing Sigil code that uses string manipulation, verify the
+actual stdlib API. The function names do not follow C, Python, or JavaScript
+conventions — they follow their own vocabulary.
+
+---
+
+## LL-006: char_at() Returns Char, Not String
+
+**Date:** 2026-02-18
+**Phase:** Phase 2 (VTerm)
+**Severity:** Critical
+
+`char_at(str, idx)` returns a **char** type, not a string. Comparing a char to
+a string literal (`char_at(s, 0) == "A"`) fails with "Invalid char/string
+operation". Passing a char to functions expecting strings (e.g., `Sys·write`,
+string concatenation) also fails.
+
+**Fix:** Always wrap: `to_string(char_at(str, idx))`.
+
+**Lesson:** Sigil distinguishes char and string types. Any time you extract a
+character from a string, convert it back to string immediately if you need
+string operations.
+
+---
+
+## LL-007: Array Concatenation With + Does Not Work
+
+**Date:** 2026-02-18
+**Phase:** Phase 2 (VTerm)
+**Severity:** Critical
+
+`arr + [item]` and `[a] + [b]` both fail with "Invalid array operation". The
+`+` operator is not defined for arrays in Sigil.
+
+**Fix:** Use `push(arr, item)` for appending. For merging arrays, iterate and
+push each element.
+
+**Lesson:** Do not assume `+` works on arrays. Sigil arrays are mutable
+containers modified via `push()`, `pop()`, and index assignment — not
+concatenated via operators.
+
+---
+
+## LL-008: Map Bracket Indexing Doesn't Work on JSON Objects
+
+**Date:** 2026-02-18
+**Phase:** Phase 2 (Monitor plugin)
+**Severity:** High
+
+`json_parse()` returns a struct/map. Bracket indexing (`obj["key"]`) fails with
+"Cannot index". Dot access (`obj.key`) works for known simple identifiers but
+crashes on missing fields with "no field 'X' in map".
+
+**Fix:** Use `map_get(obj, "key")` which returns `null` for missing keys.
+Use `map_keys(obj)` to enumerate available keys.
+
+**Lesson:** For JSON data with dynamic or potentially-missing keys, always use
+`map_get()`. Reserve dot access only for fields you are certain exist.
+
+---
+
+## LL-009: Multiple Early Returns Cause Type Errors
+
+**Date:** 2026-02-18
+**Phase:** Phase 2 (Monitor plugin)
+**Severity:** High
+
+Functions with multiple `↩` (return) statements in different `⎇` branches can
+trigger "type mismatch in return" errors, even when all branches return the
+same type. The type checker appears to struggle with divergent control flow.
+
+**Fix:** Use a `≔ mut result` variable, assign in each branch, and have a
+single `↩ result` at the end.
+
+**Lesson:** Prefer single-return-point functions in Sigil. Accumulate the
+result in a mutable variable rather than using early returns.
+
+---
+
+## LL-010: Variables Reassigned Inside ⎇ Blocks Need mut
+
+**Date:** 2026-02-18
+**Phase:** Phase 2 (SDD audit)
+**Severity:** High
+
+Variables declared with `≔` (non-mut) that are reassigned inside `⎇` blocks
+cause runtime errors. This is a Sigil scoping rule: `⎇` blocks create a nested
+scope, and reassigning an outer variable requires `≔ mut`.
+
+```sigil
+// WRONG — will fail
+≔ title = "pane";
+⎇ focused { title = "[pane]"; }
+
+// RIGHT
+≔ mut title = "pane";
+⎇ focused { title = "[pane]"; }
+```
+
+**Lesson:** Any variable that might be reassigned inside `⎇`, `⎉`, or `⟳`
+blocks must be declared `≔ mut`. This includes loop counters reassigned in loop
+bodies (though most of those are already caught early).
+
+---
+
+## LL-011: Native Syscall Fallbacks Change Test Behavior
+
+**Date:** 2026-02-18
+**Phase:** Phase 2 (native syscalls)
+**Severity:** Medium
+
+Adding `#[cfg(all(unix, feature = "native"))]` libc fallbacks to `Sys·poll_fd`
+changed behavior for fd 0 (stdin). In interpreter-only mode, polling fd 0
+returns false (no fake state). With native fallback, `libc::poll()` correctly
+detects piped stdin in the test harness as readable.
+
+**Fix:** P1_103 was restructured to poll an empty PTY master instead of fd 0,
+testing the same "poll returns false when no data" behavior without depending
+on the stdin environment.
+
+**Lesson:** When adding native syscall fallbacks, audit all tests that rely on
+specific fd behavior. Tests run in piped environments, not real terminals.
