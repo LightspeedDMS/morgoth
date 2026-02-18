@@ -166,16 +166,17 @@ Use `map_keys(obj)` to enumerate available keys.
 **Date:** 2026-02-18
 **Phase:** Phase 2 (Monitor plugin)
 **Severity:** High
+**Status:** ✅ RESOLVED (2026-02-18)
 
-Functions with multiple `↩` (return) statements in different `⎇` branches can
-trigger "type mismatch in return" errors, even when all branches return the
-same type. The type checker appears to struggle with divergent control flow.
+Functions with multiple `↩` (return) statements in different `⎇` branches
+previously triggered "type mismatch in return" errors. The root cause was that
+`collect_fn_sig` and `check_function` used `Type::Unit` for unannotated return
+types — fresh type variables now unify with any return type.
 
-**Fix:** Use a `≔ mut result` variable, assign in each branch, and have a
-single `↩ result` at the end.
-
-**Lesson:** Prefer single-return-point functions in Sigil. Accumulate the
-result in a mutable variable rather than using early returns.
+**Resolution:** The type checker fix (commit 1452796) resolved this. Regression
+tests P2_017–P2_020 confirm `↩` works with int, array, null, and multi-branch
+returns. The `≔ mut result` workaround is no longer necessary — both styles
+(early `↩` and single-return-point) work correctly.
 
 ---
 
@@ -269,12 +270,15 @@ for state machines and dispatch tables.
 
 **When:** Phase 3 test fixes (Feb 2026)
 **Severity:** P2 — type checker bug, workaround available
+**Status:** ✅ RESOLVED (2026-02-18)
 
-**Problem:** `starts_with(fn_result, prefix)` fails with "type mismatch:
-expected str, found ()" when the function returns a string via implicit return
-(`result` as last expression). Direct `==` comparison and `println()` work fine.
+**Problem:** `starts_with(fn_result, prefix)` previously failed with "type
+mismatch: expected str, found ()" when the function returned a string via
+implicit return. This was the same root cause as LL-009 — `Type::Unit` default
+for unannotated return types.
 
-**Workaround:** Coerce with string concatenation: `≔ res = "" + fn_call();`
-
-**Rule:** When passing an implicit return value to `starts_with()`, `contains()`,
-or similar stdlib functions, force the type with `"" + expr`.
+**Resolution:** Fixed by the same type inference change (fresh type variables
+in `collect_fn_sig`/`check_function`). Verified with a direct test: implicit
+returns passed to `starts_with()` and `contains()` work without coercion.
+P2_016 (existing test) also confirms this. The `"" + expr` workaround is no
+longer necessary.
