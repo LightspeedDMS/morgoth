@@ -70,6 +70,9 @@ rite Pane·new(id, region) {
 
     ≔ pid = Sys·spawn_pty(DEFAULT_SHELL, [], pty.slave_fd);
 
+    // VTerm interior dimensions (region minus border)
+    ≔ vt = VTerm·new(region.h - 2, region.w - 2);
+
     ≔ pane = {
         id: id,
         region: region,
@@ -77,9 +80,585 @@ rite Pane·new(id, region) {
         slave_fd: pty.slave_fd,
         pid: pid,
         alive: true,
-        title: "bash"
+        title: "bash",
+        vterm: vt
     };
     ↩ pane
+}
+
+// ============================================================================
+// Section 2b: VTerm — Virtual Terminal Emulator
+// ============================================================================
+
+// Create a new VTerm with given interior dimensions
+rite VTerm·new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, {ch: " ", fg: 7, bg: 0});
+        i = i + 1;
+    }
+    ≔ vt = {
+        cells: cells,
+        rows: rows,
+        cols: cols,
+        cursor_row: 0,
+        cursor_col: 0,
+        attr_fg: 7,
+        attr_bg: 0,
+        esc_state: "normal",
+        esc_buf: "",
+        scroll_top: 0,
+        scroll_bottom: rows - 1,
+        saved_row: 0,
+        saved_col: 0,
+        scrollback: [],
+        scrollback_max: 1000,
+        scroll_offset: 0
+    };
+    ↩ vt
+}
+
+// Scroll the VTerm up by one line (evict top line of scroll region)
+rite vterm_scroll_up(vt) {
+    // Save evicted line to scrollback
+    ≔ mut evicted = [];
+    ≔ mut ec = 0;
+    ⟳ ec < vt.cols {
+        ≔ idx = vt.scroll_top * vt.cols + ec;
+        push(evicted, vt.cells[idx]);
+        ec = ec + 1;
+    }
+    push(vt.scrollback, evicted);
+    // Trim scrollback if over max
+    ⎇ len(vt.scrollback) > vt.scrollback_max {
+        // Remove oldest by rebuilding (drop first element)
+        ≔ mut trimmed = [];
+        ≔ mut ti = 1;
+        ⟳ ti < len(vt.scrollback) {
+            push(trimmed, vt.scrollback[ti]);
+            ti = ti + 1;
+        }
+        vt.scrollback = trimmed;
+    }
+
+    // Shift lines up within scroll region
+    ≔ mut row = vt.scroll_top;
+    ⟳ row < vt.scroll_bottom {
+        ≔ mut col = 0;
+        ⟳ col < vt.cols {
+            ≔ dst = row * vt.cols + col;
+            ≔ src = (row + 1) * vt.cols + col;
+            vt.cells[dst] = vt.cells[src];
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    // Clear the bottom line of scroll region
+    ≔ mut col = 0;
+    ⟳ col < vt.cols {
+        ≔ idx = vt.scroll_bottom * vt.cols + col;
+        vt.cells[idx] = {ch: " ", fg: 7, bg: 0};
+        col = col + 1;
+    }
+}
+
+// Write a printable character at the cursor position
+// ch should be a string (use to_string(char_at(...)) when feeding)
+rite vterm_put_char(vt, ch) {
+    // Handle line wrap
+    ⎇ vt.cursor_col >= vt.cols {
+        vt.cursor_col = 0;
+        vt.cursor_row = vt.cursor_row + 1;
+        ⎇ vt.cursor_row > vt.scroll_bottom {
+            vterm_scroll_up(vt);
+            vt.cursor_row = vt.scroll_bottom;
+        }
+    }
+
+    ≔ idx = vt.cursor_row * vt.cols + vt.cursor_col;
+    ⎇ idx >= 0 ∧ idx < len(vt.cells) {
+        vt.cells[idx] = {ch: ch, fg: vt.attr_fg, bg: vt.attr_bg};
+    }
+    vt.cursor_col = vt.cursor_col + 1;
+}
+
+// Parse CSI parameters string into array of ints
+rite vterm_parse_params(buf) {
+    ⎇ buf == "" {
+        ↩ []
+    }
+    ≔ parts = split(buf, ";");
+    ≔ mut params = [];
+    ≔ mut i = 0;
+    ⟳ i < len(parts) {
+        ⎇ parts[i] == "" {
+            push(params, 0);
+        } ⎉ {
+            push(params, to_int(parts[i]));
+        }
+        i = i + 1;
+    }
+    ↩ params
+}
+
+// Dispatch a CSI command
+rite vterm_csi_dispatch(vt, cmd, buf) {
+    ≔ params = vterm_parse_params(buf);
+    ≔ n = 0;
+    ⎇ len(params) > 0 {
+        n = params[0];
+    }
+
+    // SGR - Set Graphics Rendition
+    ⎇ cmd == "m" {
+        ⎇ len(params) == 0 {
+            // CSI m = reset
+            vt.attr_fg = 7;
+            vt.attr_bg = 0;
+        } ⎉ {
+            ≔ mut pi = 0;
+            ⟳ pi < len(params) {
+                ≔ p = params[pi];
+                ⎇ p == 0 {
+                    vt.attr_fg = 7;
+                    vt.attr_bg = 0;
+                }
+                ⎇ p == 1 {
+                    // Bold — brighten fg by adding 8
+                    ⎇ vt.attr_fg < 8 {
+                        vt.attr_fg = vt.attr_fg + 8;
+                    }
+                }
+                // Standard foreground: 30-37
+                ⎇ p >= 30 ∧ p <= 37 {
+                    vt.attr_fg = p - 30;
+                }
+                // Standard background: 40-47
+                ⎇ p >= 40 ∧ p <= 47 {
+                    vt.attr_bg = p - 40;
+                }
+                // 256-color foreground: 38;5;N
+                ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 5 ∧ pi + 2 < len(params) {
+                    vt.attr_fg = params[pi + 2];
+                    pi = pi + 2;
+                }
+                // 256-color background: 48;5;N
+                ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 5 ∧ pi + 2 < len(params) {
+                    vt.attr_bg = params[pi + 2];
+                    pi = pi + 2;
+                }
+                // True color foreground: 38;2;R;G;B (approximate to 256)
+                ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
+                    // Map to closest 256 color (16 + 36*r + 6*g + b, each 0-5)
+                    ≔ r = params[pi + 2] * 5 / 255;
+                    ≔ g = params[pi + 3] * 5 / 255;
+                    ≔ b = params[pi + 4] * 5 / 255;
+                    vt.attr_fg = 16 + 36 * r + 6 * g + b;
+                    pi = pi + 4;
+                }
+                // True color background: 48;2;R;G;B
+                ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
+                    ≔ r = params[pi + 2] * 5 / 255;
+                    ≔ g = params[pi + 3] * 5 / 255;
+                    ≔ b = params[pi + 4] * 5 / 255;
+                    vt.attr_bg = 16 + 36 * r + 6 * g + b;
+                    pi = pi + 4;
+                }
+                // Bright foreground: 90-97
+                ⎇ p >= 90 ∧ p <= 97 {
+                    vt.attr_fg = p - 90 + 8;
+                }
+                // Bright background: 100-107
+                ⎇ p >= 100 ∧ p <= 107 {
+                    vt.attr_bg = p - 100 + 8;
+                }
+                pi = pi + 1;
+            }
+        }
+    }
+
+    // CUP - Cursor Position: CSI row;col H
+    ⎇ cmd == "H" ∨ cmd == "f" {
+        ≔ mut row = 1;
+        ≔ mut col = 1;
+        ⎇ len(params) >= 1 ∧ params[0] > 0 {
+            row = params[0];
+        }
+        ⎇ len(params) >= 2 ∧ params[1] > 0 {
+            col = params[1];
+        }
+        vt.cursor_row = row - 1;
+        vt.cursor_col = col - 1;
+        // Clamp
+        ⎇ vt.cursor_row >= vt.rows {
+            vt.cursor_row = vt.rows - 1;
+        }
+        ⎇ vt.cursor_col >= vt.cols {
+            vt.cursor_col = vt.cols - 1;
+        }
+    }
+
+    // ED - Erase Display: CSI n J
+    ⎇ cmd == "J" {
+        ⎇ n == 0 {
+            // Erase from cursor to end
+            ≔ mut r = vt.cursor_row;
+            ⟳ r < vt.rows {
+                ≔ mut c_start = 0;
+                ⎇ r == vt.cursor_row {
+                    c_start = vt.cursor_col;
+                }
+                ≔ mut c = c_start;
+                ⟳ c < vt.cols {
+                    vt.cells[r * vt.cols + c] = {ch: " ", fg: 7, bg: 0};
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+        }
+        ⎇ n == 1 {
+            // Erase from start to cursor
+            ≔ mut r = 0;
+            ⟳ r <= vt.cursor_row {
+                ≔ mut c_end = vt.cols;
+                ⎇ r == vt.cursor_row {
+                    c_end = vt.cursor_col + 1;
+                }
+                ≔ mut c = 0;
+                ⟳ c < c_end {
+                    vt.cells[r * vt.cols + c] = {ch: " ", fg: 7, bg: 0};
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+        }
+        ⎇ n == 2 ∨ n == 3 {
+            // Erase all
+            ≔ mut ei = 0;
+            ⟳ ei < len(vt.cells) {
+                vt.cells[ei] = {ch: " ", fg: 7, bg: 0};
+                ei = ei + 1;
+            }
+        }
+    }
+
+    // EL - Erase Line: CSI n K
+    ⎇ cmd == "K" {
+        ≔ row_start = vt.cursor_row * vt.cols;
+        ⎇ n == 0 {
+            // Erase from cursor to end of line
+            ≔ mut c = vt.cursor_col;
+            ⟳ c < vt.cols {
+                vt.cells[row_start + c] = {ch: " ", fg: 7, bg: 0};
+                c = c + 1;
+            }
+        }
+        ⎇ n == 1 {
+            // Erase from start of line to cursor
+            ≔ mut c = 0;
+            ⟳ c <= vt.cursor_col {
+                vt.cells[row_start + c] = {ch: " ", fg: 7, bg: 0};
+                c = c + 1;
+            }
+        }
+        ⎇ n == 2 {
+            // Erase entire line
+            ≔ mut c = 0;
+            ⟳ c < vt.cols {
+                vt.cells[row_start + c] = {ch: " ", fg: 7, bg: 0};
+                c = c + 1;
+            }
+        }
+    }
+
+    // CUU - Cursor Up: CSI n A
+    ⎇ cmd == "A" {
+        ≔ mut amount = 1;
+        ⎇ n > 0 {
+            amount = n;
+        }
+        vt.cursor_row = vt.cursor_row - amount;
+        ⎇ vt.cursor_row < 0 {
+            vt.cursor_row = 0;
+        }
+    }
+
+    // CUD - Cursor Down: CSI n B
+    ⎇ cmd == "B" {
+        ≔ mut amount = 1;
+        ⎇ n > 0 {
+            amount = n;
+        }
+        vt.cursor_row = vt.cursor_row + amount;
+        ⎇ vt.cursor_row >= vt.rows {
+            vt.cursor_row = vt.rows - 1;
+        }
+    }
+
+    // CUF - Cursor Forward: CSI n C
+    ⎇ cmd == "C" {
+        ≔ mut amount = 1;
+        ⎇ n > 0 {
+            amount = n;
+        }
+        vt.cursor_col = vt.cursor_col + amount;
+        ⎇ vt.cursor_col >= vt.cols {
+            vt.cursor_col = vt.cols - 1;
+        }
+    }
+
+    // CUB - Cursor Back: CSI n D
+    ⎇ cmd == "D" {
+        ≔ mut amount = 1;
+        ⎇ n > 0 {
+            amount = n;
+        }
+        vt.cursor_col = vt.cursor_col - amount;
+        ⎇ vt.cursor_col < 0 {
+            vt.cursor_col = 0;
+        }
+    }
+
+    // CHA - Cursor Horizontal Absolute: CSI n G
+    ⎇ cmd == "G" {
+        ≔ mut col = 1;
+        ⎇ n > 0 {
+            col = n;
+        }
+        vt.cursor_col = col - 1;
+        ⎇ vt.cursor_col >= vt.cols {
+            vt.cursor_col = vt.cols - 1;
+        }
+    }
+
+    // VPA - Vertical Position Absolute: CSI n d
+    ⎇ cmd == "d" {
+        ≔ mut row = 1;
+        ⎇ n > 0 {
+            row = n;
+        }
+        vt.cursor_row = row - 1;
+        ⎇ vt.cursor_row >= vt.rows {
+            vt.cursor_row = vt.rows - 1;
+        }
+    }
+
+    // DECSTBM - Set Top/Bottom Margins: CSI top;bottom r
+    ⎇ cmd == "r" {
+        ≔ mut top = 1;
+        ≔ mut bottom = vt.rows;
+        ⎇ len(params) >= 1 ∧ params[0] > 0 {
+            top = params[0];
+        }
+        ⎇ len(params) >= 2 ∧ params[1] > 0 {
+            bottom = params[1];
+        }
+        vt.scroll_top = top - 1;
+        vt.scroll_bottom = bottom - 1;
+        // Clamp
+        ⎇ vt.scroll_top < 0 {
+            vt.scroll_top = 0;
+        }
+        ⎇ vt.scroll_bottom >= vt.rows {
+            vt.scroll_bottom = vt.rows - 1;
+        }
+        // Move cursor to home
+        vt.cursor_row = 0;
+        vt.cursor_col = 0;
+    }
+
+    // Save cursor: CSI s
+    ⎇ cmd == "s" {
+        vt.saved_row = vt.cursor_row;
+        vt.saved_col = vt.cursor_col;
+    }
+
+    // Restore cursor: CSI u
+    ⎇ cmd == "u" {
+        vt.cursor_row = vt.saved_row;
+        vt.cursor_col = vt.saved_col;
+    }
+}
+
+// Feed a string of data through the VTerm state machine
+rite vterm_feed(vt, data) {
+    ≔ mut i = 0;
+    ⟳ i < len(data) {
+        ≔ ch = to_string(char_at(data, i));
+        ≔ code = char_code_at(data, i);
+
+        ⎇ vt.esc_state == "normal" {
+            // ESC character
+            ⎇ code == 27 {
+                vt.esc_state = "escape";
+                vt.esc_buf = "";
+            }
+            // Carriage return
+            ⎇ code == 13 {
+                vt.cursor_col = 0;
+            }
+            // Line feed
+            ⎇ code == 10 {
+                vt.cursor_row = vt.cursor_row + 1;
+                ⎇ vt.cursor_row > vt.scroll_bottom {
+                    vterm_scroll_up(vt);
+                    vt.cursor_row = vt.scroll_bottom;
+                }
+            }
+            // Backspace
+            ⎇ code == 8 {
+                ⎇ vt.cursor_col > 0 {
+                    vt.cursor_col = vt.cursor_col - 1;
+                }
+            }
+            // Tab
+            ⎇ code == 9 {
+                vt.cursor_col = ((vt.cursor_col / 8) + 1) * 8;
+                ⎇ vt.cursor_col >= vt.cols {
+                    vt.cursor_col = vt.cols - 1;
+                }
+            }
+            // Printable characters (>= 32)
+            ⎇ code >= 32 {
+                vterm_put_char(vt, ch);
+            }
+        }
+
+        ⎇ vt.esc_state == "escape" {
+            ⎇ ch == "[" {
+                vt.esc_state = "csi";
+                vt.esc_buf = "";
+            } ⎉ {
+                // Unrecognized escape — drop and return to normal
+                vt.esc_state = "normal";
+            }
+        }
+
+        ⎇ vt.esc_state == "csi" {
+            // Check if this is a terminal character (letter)
+            ⎇ (code >= 64 ∧ code <= 90) ∨ (code >= 97 ∧ code <= 122) {
+                // Dispatch the CSI command
+                vterm_csi_dispatch(vt, ch, vt.esc_buf);
+                vt.esc_state = "normal";
+                vt.esc_buf = "";
+            } ⎉ {
+                // Accumulate parameter characters
+                vt.esc_buf = vt.esc_buf + ch;
+            }
+        }
+
+        i = i + 1;
+    }
+    // Reset scroll offset on new data
+    vt.scroll_offset = 0;
+}
+
+// Blit VTerm cells to the main Grid at the given region (inside borders)
+rite vterm_blit(vt, grid, region) {
+    ≔ inner_x = region.x + 1;
+    ≔ inner_y = region.y + 1;
+
+    // Check if scrolled back
+    ⎇ vt.scroll_offset > 0 ∧ len(vt.scrollback) > 0 {
+        // Render from scrollback
+        ≔ mut sb_start = len(vt.scrollback) - vt.scroll_offset;
+        ⎇ sb_start < 0 {
+            sb_start = 0;
+        }
+        ≔ mut row = 0;
+        ⟳ row < vt.rows {
+            ≔ sb_idx = sb_start + row;
+            ⎇ sb_idx < len(vt.scrollback) {
+                // Render scrollback line
+                ≔ line = vt.scrollback[sb_idx];
+                ≔ mut col = 0;
+                ⟳ col < vt.cols ∧ col < len(line) {
+                    Grid·set(grid, inner_y + row, inner_x + col, line[col].ch, line[col].fg, line[col].bg);
+                    col = col + 1;
+                }
+            } ⎉ {
+                // Render from live buffer (for lines beyond scrollback)
+                ≔ live_row = row - (len(vt.scrollback) - sb_start);
+                ⎇ live_row >= 0 ∧ live_row < vt.rows {
+                    ≔ mut col = 0;
+                    ⟳ col < vt.cols {
+                        ≔ idx = live_row * vt.cols + col;
+                        Grid·set(grid, inner_y + row, inner_x + col, vt.cells[idx].ch, vt.cells[idx].fg, vt.cells[idx].bg);
+                        col = col + 1;
+                    }
+                }
+            }
+            row = row + 1;
+        }
+    } ⎉ {
+        // Live view — render directly from VTerm cells
+        ≔ mut row = 0;
+        ⟳ row < vt.rows {
+            ≔ mut col = 0;
+            ⟳ col < vt.cols {
+                ≔ idx = row * vt.cols + col;
+                ⎇ idx < len(vt.cells) {
+                    Grid·set(grid, inner_y + row, inner_x + col, vt.cells[idx].ch, vt.cells[idx].fg, vt.cells[idx].bg);
+                }
+                col = col + 1;
+            }
+            row = row + 1;
+        }
+    }
+}
+
+// ============================================================================
+// Section 2c: Configuration
+// ============================================================================
+
+// Load config from ~/.morgoth/config.json, return defaults if missing
+rite load_config() {
+    ≔ home = env("HOME");
+    ≔ config_path = home + "/.morgoth/config.json";
+
+    ≔ mut cfg = {
+        grid_rows: 2,
+        grid_cols: 3,
+        shell: "/bin/bash",
+        scrollback_lines: 1000,
+        leader_key: 2,
+        hmr: true,
+        pane_types: ["terminal", "terminal", "terminal", "terminal", "terminal", "terminal"]
+    };
+
+    ⎇ fs_exists(config_path) == true {
+        ≔ raw = fs_read(config_path);
+        ≔ j = json_parse(raw);
+
+        // Extract grid config
+        ⎇ j.grid != null {
+            ⎇ j.grid.rows != null { cfg.grid_rows = j.grid.rows; }
+            ⎇ j.grid.cols != null { cfg.grid_cols = j.grid.cols; }
+        }
+        ⎇ j.shell != null { cfg.shell = j.shell; }
+        ⎇ j.scrollback_lines != null { cfg.scrollback_lines = j.scrollback_lines; }
+        ⎇ j.leader_key != null { cfg.leader_key = j.leader_key; }
+        ⎇ j.hmr != null { cfg.hmr = j.hmr; }
+
+        // Extract pane types
+        ⎇ j.panes != null {
+            ≔ mut types = [];
+            ≔ mut i = 0;
+            ⟳ i < len(j.panes) {
+                ⎇ j.panes[i].type != null {
+                    push(types, j.panes[i].type);
+                } ⎉ {
+                    push(types, "terminal");
+                }
+                i = i + 1;
+            }
+            cfg.pane_types = types;
+        }
+    }
+
+    ↩ cfg
 }
 
 // ============================================================================
@@ -119,7 +698,7 @@ rite layout_grid(rows, cols, screen_w, screen_h) {
                 w = base_w + remainder_w;
             }
 
-            regions = regions + [Region·new(x_offset, y_offset, w, h)];
+            push(regions, Region·new(x_offset, y_offset, w, h));
 
             x_offset = x_offset + w;
             c = c + 1;
@@ -142,7 +721,7 @@ rite Grid·new(rows, cols) {
     ≔ cells = [];
     ≔ mut i = 0;
     ⟳ i < total {
-        cells = cells + [Cell·new(" ", 7, 0, true)];
+        push(cells, Cell·new(" ", 7, 0, true));
         i = i + 1;
     }
     ≔ grid = {
@@ -237,7 +816,7 @@ rite render_border(grid, region, title) {
         ⎇ max_title_len > 0 {
             ≔ mut ti = 0;
             ⟳ ti < max_title_len ∧ ti < len(title) {
-                Grid·set(grid, y, x + 2 + ti, substr(title, ti, 1), 15, 0);
+                Grid·set(grid, y, x + 2 + ti, to_string(char_at(title, ti)), 15, 0);
                 ti = ti + 1;
             }
         }
@@ -255,7 +834,7 @@ rite render_content(grid, region, text) {
     ≔ mut col = 0;
     ≔ mut i = 0;
     ⟳ i < len(text) ∧ row < inner_h {
-        ≔ ch = substr(text, i, 1);
+        ≔ ch = to_string(char_at(text, i));
         ⎇ ch == "\n" {
             row = row + 1;
             col = 0;
@@ -281,7 +860,7 @@ rite render_status_bar(grid, text) {
     // Write status text
     ≔ mut i = 0;
     ⟳ i < len(text) ∧ i < grid.cols {
-        Grid·set(grid, row, i, substr(text, i, 1), 0, 7);
+        Grid·set(grid, row, i, to_string(char_at(text, i)), 0, 7);
         i = i + 1;
     }
 }
@@ -334,7 +913,7 @@ rite InputState·new() {
 rite process_input(input_state, byte, pane_count) {
     // In escape sequence
     ⎇ input_state.in_escape == true {
-        input_state.escape_buf = input_state.escape_buf + chr(byte);
+        input_state.escape_buf = input_state.escape_buf + from_char_code(byte);
         // Check for mouse SGR: ESC[<Btn;X;YM or m
         ⎇ byte == 77 ∨ byte == 109 {
             // Parse mouse event (simplified)
@@ -373,6 +952,14 @@ rite process_input(input_state, byte, pane_count) {
         // 'q' = quit
         ⎇ byte == 113 {
             ↩ "quit"
+        }
+        // 'k' = scroll back (up)
+        ⎇ byte == 107 {
+            ↩ "scroll_up"
+        }
+        // 'j' = scroll forward (down)
+        ⎇ byte == 106 {
+            ↩ "scroll_down"
         }
         // 'c' = new pane (future)
         // 'x' = close pane (future)
@@ -477,15 +1064,122 @@ rite shutdown_panes(panes) {
 }
 
 // ============================================================================
+// Section 8b: System Monitor Plugin
+// ============================================================================
+
+// Format large numbers with K/M suffixes
+rite format_number(n) {
+    ≔ mut result = to_string(n);
+    ⎇ n >= 1000000 {
+        ≔ m = n / 1000;
+        result = to_string(m / 1000) + "." + to_string((m % 1000) / 100) + "M";
+    } ⎉ {
+        ⎇ n >= 1000 {
+            result = to_string(n / 1000) + "." + to_string((n % 1000) / 100) + "K";
+        }
+    }
+    ↩ result
+}
+
+// Load Claude Code stats from ~/.claude/stats-cache.json
+rite monitor_load_stats() {
+    ≔ home = env("HOME");
+    ≔ stats_path = home + "/.claude/stats-cache.json";
+
+    ⎇ fs_exists(stats_path) == false {
+        ↩ null
+    }
+
+    ≔ raw = fs_read(stats_path);
+    ≔ stats = json_parse(raw);
+    ↩ stats
+}
+
+// Render monitor data into a VTerm
+rite monitor_render(vt, stats) {
+    // Clear VTerm
+    ≔ mut ei = 0;
+    ⟳ ei < len(vt.cells) {
+        vt.cells[ei] = {ch: " ", fg: 7, bg: 0};
+        ei = ei + 1;
+    }
+    vt.cursor_row = 0;
+    vt.cursor_col = 0;
+
+    ⎇ stats == null {
+        // No data available
+        vterm_feed(vt, " Claude Code Monitor\n");
+        vterm_feed(vt, " No data available\n");
+        ↩ 0
+    }
+
+    // Header
+    vterm_feed(vt, " Claude Code Monitor\n");
+
+    // Separator
+    ≔ mut si = 0;
+    ≔ mut sep = " ";
+    ⟳ si < vt.cols - 2 {
+        sep = sep + "\xe2\x94\x80";
+        si = si + 1;
+    }
+    vterm_feed(vt, sep + "\n");
+
+    // Total sessions/messages
+    ≔ mut sessions_str = "?";
+    ≔ ts = map_get(stats, "totalSessions");
+    ⎇ ts != null {
+        sessions_str = to_string(ts);
+    }
+    ≔ mut msgs_str = "?";
+    ≔ tm = map_get(stats, "totalMessages");
+    ⎇ tm != null {
+        msgs_str = format_number(tm);
+    }
+
+    vterm_feed(vt, " Sessions: " + sessions_str + "\n");
+    vterm_feed(vt, " Messages: " + msgs_str + "\n");
+    vterm_feed(vt, "\n");
+
+    // Model usage
+    ≔ mu = map_get(stats, "modelUsage");
+    ⎇ mu != null {
+        vterm_feed(vt, " Model Usage\n");
+        vterm_feed(vt, sep + "\n");
+        ≔ model_keys = map_keys(mu);
+        ≔ mut mi = 0;
+        ⟳ mi < len(model_keys) {
+            ≔ model_name = model_keys[mi];
+            ≔ model = map_get(mu, model_name);
+            ⎇ model != null {
+                ≔ in_tok = map_get(model, "inputTokens");
+                ≔ out_tok = map_get(model, "outputTokens");
+                ≔ mut total_tok = 0;
+                ⎇ in_tok != null { total_tok = total_tok + in_tok; }
+                ⎇ out_tok != null { total_tok = total_tok + out_tok; }
+                vterm_feed(vt, " " + model_name + " " + format_number(total_tok) + "\n");
+            }
+            mi = mi + 1;
+        }
+    }
+
+    ↩ 0
+}
+
+// ============================================================================
 // Section 9: Main Event Loop
 // ============================================================================
 
 rite main() {
-    // Configuration (hardcoded for Phase 1)
-    ≔ grid_rows = 2;
-    ≔ grid_cols = 3;
-    ≔ screen_w = 80;
-    ≔ screen_h = 24;
+    // Load configuration
+    ≔ cfg = load_config();
+    ≔ grid_rows = cfg.grid_rows;
+    ≔ grid_cols = cfg.grid_cols;
+
+    // Query real terminal dimensions
+    ≔ winsize = term_get_winsize(1);
+    ≔ mut screen_w = winsize.cols;
+    ≔ mut screen_h = winsize.rows;
 
     // Initialize terminal
     terminal_init();
@@ -497,18 +1191,18 @@ rite main() {
     Sys·signal_register(SIGCHLD());
 
     // Calculate layout
-    ≔ regions = layout_grid(grid_rows, grid_cols, screen_w, screen_h);
+    ≔ mut regions = layout_grid(grid_rows, grid_cols, screen_w, screen_h);
 
     // Create panes
     ≔ panes = [];
     ≔ mut i = 0;
     ⟳ i < len(regions) {
-        panes = panes + [Pane·new(i, regions[i])];
+        push(panes, Pane·new(i, regions[i]));
         i = i + 1;
     }
 
     // Create screen buffer
-    ≔ screen = Grid·new(screen_h, screen_w);
+    ≔ mut screen = Grid·new(screen_h, screen_w);
 
     // Input state
     ≔ input = InputState·new();
@@ -522,7 +1216,7 @@ rite main() {
     // Initial render
     i = 0;
     ⟳ i < len(panes) {
-        ≔ title = panes[i].title;
+        ≔ mut title = panes[i].title;
         ⎇ i == focus {
             title = "[" + title + "]";
         }
@@ -541,8 +1235,40 @@ rite main() {
 
         // Check for SIGWINCH (terminal resize)
         ⎇ Sys·signal_pending(SIGWINCH()) == true {
-            // TODO: Re-query terminal size, recalculate layout
-            // For now, just acknowledge
+            // Re-query terminal size
+            ≔ new_ws = term_get_winsize(1);
+            screen_w = new_ws.cols;
+            screen_h = new_ws.rows;
+
+            // Recalculate layout
+            regions = layout_grid(grid_rows, grid_cols, screen_w, screen_h);
+
+            // Recreate screen buffer
+            screen = Grid·new(screen_h, screen_w);
+
+            // Update pane regions, resize PTYs, recreate VTerms
+            ≔ mut ri = 0;
+            ⟳ ri < len(panes) {
+                panes[ri].region = regions[ri];
+                panes[ri].vterm = VTerm·new(regions[ri].h - 2, regions[ri].w - 2);
+                ⎇ panes[ri].alive == true {
+                    Pty·set_size(panes[ri].master_fd, regions[ri].h, regions[ri].w);
+                }
+                ri = ri + 1;
+            }
+
+            // Full redraw
+            ≔ mut di = 0;
+            ⟳ di < len(panes) {
+                ≔ mut t = panes[di].title;
+                ⎇ di == focus {
+                    t = "[" + t + "]";
+                }
+                render_border(screen, panes[di].region, t);
+                di = di + 1;
+            }
+            render_status_bar(screen, " Morgoth v" + VERSION + " | Ctrl-B: leader | q: quit | n/p: focus");
+            flush_dirty(screen);
         }
 
         // Poll stdin for user input
@@ -552,7 +1278,7 @@ rite main() {
                 // Process each byte
                 ≔ mut bi = 0;
                 ⟳ bi < len(input_data) {
-                    ≔ byte = ord(substr(input_data, bi, 1));
+                    ≔ byte = char_code_at(input_data, bi);
                     ≔ action = process_input(input, byte, len(panes));
 
                     ⎇ action == "quit" {
@@ -563,7 +1289,7 @@ rite main() {
                         // Re-render borders to show focus
                         ≔ mut pi = 0;
                         ⟳ pi < len(panes) {
-                            ≔ t = panes[pi].title;
+                            ≔ mut t = panes[pi].title;
                             ⎇ pi == focus {
                                 t = "[" + t + "]";
                             }
@@ -581,7 +1307,7 @@ rite main() {
                         // Re-render borders
                         ≔ mut pi = 0;
                         ⟳ pi < len(panes) {
-                            ≔ t = panes[pi].title;
+                            ≔ mut t = panes[pi].title;
                             ⎇ pi == focus {
                                 t = "[" + t + "]";
                             }
@@ -590,9 +1316,34 @@ rite main() {
                         }
                         flush_dirty(screen);
                     }
+                    ⎇ action == "scroll_up" {
+                        ≔ vt = panes[focus].vterm;
+                        ⎇ vt.scroll_offset < len(vt.scrollback) {
+                            vt.scroll_offset = vt.scroll_offset + 1;
+                        }
+                        vterm_blit(vt, screen, panes[focus].region);
+                        // Show scroll indicator in border
+                        ≔ sb_title = "[" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
+                        render_border(screen, panes[focus].region, sb_title);
+                        flush_dirty(screen);
+                    }
+                    ⎇ action == "scroll_down" {
+                        ≔ vt = panes[focus].vterm;
+                        ⎇ vt.scroll_offset > 0 {
+                            vt.scroll_offset = vt.scroll_offset - 1;
+                        }
+                        vterm_blit(vt, screen, panes[focus].region);
+                        ⎇ vt.scroll_offset > 0 {
+                            ≔ sb_title = "[" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
+                            render_border(screen, panes[focus].region, sb_title);
+                        } ⎉ {
+                            render_border(screen, panes[focus].region, "[" + panes[focus].title + "]");
+                        }
+                        flush_dirty(screen);
+                    }
                     ⎇ action == "passthrough" {
                         // Forward to focused pane's PTY master
-                        ≔ ch = substr(input_data, bi, 1);
+                        ≔ ch = to_string(char_at(input_data, bi));
                         Sys·write(panes[focus].master_fd, ch, 1);
                     }
 
@@ -608,8 +1359,9 @@ rite main() {
                 ⎇ Sys·poll_fd(panes[i].master_fd, 0) == true {
                     ≔ pty_data = Sys·read_string(panes[i].master_fd, 4096);
                     ⎇ pty_data != "" {
-                        // Render PTY output into pane's region
-                        render_content(screen, panes[i].region, pty_data);
+                        // Feed PTY output through VTerm emulator
+                        vterm_feed(panes[i].vterm, pty_data);
+                        vterm_blit(panes[i].vterm, screen, panes[i].region);
                         flush_dirty(screen);
                     }
                 }
@@ -629,7 +1381,7 @@ rite main() {
         }
 
         // Sleep to avoid busy-waiting
-        Sys·clock_gettime();  // Small delay (nanosecond resolution, but keeps loop responsive)
+        sleep(POLL_INTERVAL_MS);
     }
 
     // Shutdown
