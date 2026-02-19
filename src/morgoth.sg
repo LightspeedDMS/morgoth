@@ -64,11 +64,11 @@ rite Region·new(x, y, w, h) {
 }
 
 // A Pane: owns a PTY, a shell process, and a screen region
-rite Pane·new(id, region) {
+rite Pane·new(id, region, shell) {
     ≔ pty = Pty·open();
     Pty·set_size(pty.master_fd, region.h - 2, region.w - 2);
 
-    ≔ pid = Sys·spawn_pty(DEFAULT_SHELL, [], pty.slave_fd);
+    ≔ pid = Sys·spawn_pty(shell, [], pty.slave_fd);
 
     // VTerm interior dimensions (region minus border)
     ≔ vt = VTerm·new(region.h - 2, region.w - 2);
@@ -1087,6 +1087,7 @@ rite load_config() {
         scrollback_lines: 1000,
         leader_key: 2,
         hmr: true,
+        max_panes: 12,
         pane_types: ["terminal", "terminal", "terminal", "terminal", "terminal", "terminal"]
     };
 
@@ -1110,6 +1111,8 @@ rite load_config() {
         ⎇ j_leader != null { cfg.leader_key = j_leader; }
         ≔ j_hmr = map_get(j, "hmr");
         ⎇ j_hmr != null { cfg.hmr = j_hmr; }
+        ≔ j_max = map_get(j, "max_panes");
+        ⎇ j_max != null { cfg.max_panes = j_max; }
 
         // Extract pane types (supports both strings and {type: "..."} objects)
         ≔ j_panes = map_get(j, "panes");
@@ -1140,6 +1143,51 @@ rite load_config() {
 // ============================================================================
 // Section 3: Layout Engine
 // ============================================================================
+
+// Auto-size grid dimensions to minimize aspect ratio distortion
+// Uses ceiling division: (n + d - 1) / d since Sigil int division truncates
+rite recompute_grid(num_panes, screen_h, screen_w) {
+    ≔ usable_h = screen_h - 1;
+    ≔ mut best_rows = 1;
+    ≔ mut best_cols = num_panes;
+    ≔ mut best_diff = 999999;
+    ≔ mut r = 1;
+    ⟳ r * r <= num_panes {
+        ≔ c = (num_panes + r - 1) / r;
+        ≔ pane_h = usable_h / r;
+        ≔ pane_w = screen_w / c;
+        ≔ mut diff = pane_w - pane_h * 2;
+        ⎇ diff < 0 { diff = 0 - diff; }
+        ⎇ diff < best_diff {
+            best_diff = diff;
+            best_rows = r;
+            best_cols = c;
+        }
+        r = r + 1;
+    }
+    ↩ { rows: best_rows, cols: best_cols }
+}
+
+// Relayout all panes: recompute grid, resize vterms, propagate PTY sizes, redraw
+rite relayout_panes(panes, screen_w, screen_h, screen, focus) {
+    ≔ grid = recompute_grid(len(panes), screen_h, screen_w);
+    ≔ regions = layout_grid(grid.rows, grid.cols, screen_w, screen_h);
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        panes[i].region = regions[i];
+        vterm_resize(panes[i].vterm, regions[i].h - 2, regions[i].w - 2);
+        ⎇ panes[i].alive == true {
+            Pty·set_size(panes[i].master_fd, regions[i].h - 2, regions[i].w - 2);
+        }
+        vterm_blit(panes[i].vterm, screen, panes[i].region);
+        ≔ mut t = panes[i].title;
+        ⎇ i == focus { t = "[" + t + "]"; }
+        render_border(screen, panes[i].region, t);
+        i = i + 1;
+    }
+    flush_dirty(screen);
+    ↩ { grid_rows: grid.rows, grid_cols: grid.cols }
+}
 
 // Calculate grid layout regions for a rows x cols grid
 // screen_w, screen_h = total terminal dimensions
@@ -1396,7 +1444,8 @@ rite InputState·new() {
         mouse_mode: true,
         escape_buf: "",
         in_escape: false,
-        last_escape_buf: ""
+        last_escape_buf: "",
+        confirming_close: false
     };
     ↩ state
 }
@@ -1405,6 +1454,13 @@ rite InputState·new() {
 // Actions: "passthrough", "leader_activate", "focus_next", "focus_prev",
 //          "quit", "none", "mouse:X:Y"
 rite process_input(input_state, byte, pane_count) {
+    // Confirmation intercept — before any other input handling
+    ⎇ input_state.confirming_close == true {
+        input_state.confirming_close = false;
+        ⎇ byte == 121 { ↩ "close_confirm"; }
+        ↩ "close_cancel"
+    }
+
     ≔ mut action = "passthrough";
 
     // In escape sequence
@@ -1441,6 +1497,10 @@ rite process_input(input_state, byte, pane_count) {
                 ⎇ byte == 113 { action = "quit"; }
                 ⎇ byte == 107 { action = "scroll_up"; }
                 ⎇ byte == 106 { action = "scroll_down"; }
+                ⎇ byte == 99  { action = "create_terminal"; }
+                ⎇ byte == 109 { action = "create_monitor"; }
+                ⎇ byte == 120 { action = "close_pane"; }
+                ⎇ byte == 122 { action = "zoom_toggle"; }
             } ⎉ {
                 // Leader key (Ctrl-B)
                 ⎇ byte == LEADER_KEY {
@@ -1656,8 +1716,8 @@ rite monitor_render(vt, stats) {
 rite main() {
     // Load configuration
     ≔ cfg = load_config();
-    ≔ grid_rows = cfg.grid_rows;
-    ≔ grid_cols = cfg.grid_cols;
+    ≔ mut grid_rows = cfg.grid_rows;
+    ≔ mut grid_cols = cfg.grid_cols;
 
     // Query real terminal dimensions
     ≔ winsize = term_get_winsize(1);
@@ -1677,7 +1737,7 @@ rite main() {
     ≔ mut regions = layout_grid(grid_rows, grid_cols, screen_w, screen_h);
 
     // Create panes (route based on config pane_types)
-    ≔ panes = [];
+    ≔ mut panes = [];
     ≔ mut i = 0;
     ⟳ i < len(regions) {
         ≔ mut ptype = "terminal";
@@ -1687,7 +1747,7 @@ rite main() {
         ⎇ ptype == "monitor" {
             push(panes, MonitorPane·new(i, regions[i]));
         } ⎉ {
-            push(panes, Pane·new(i, regions[i]));
+            push(panes, Pane·new(i, regions[i], cfg.shell));
         }
         i = i + 1;
     }
@@ -1699,6 +1759,7 @@ rite main() {
     ≔ input = InputState·new();
     ≔ mut focus = 0;
     ≔ mut running = true;
+    ≔ mut zoomed = false;
 
     // HMR state
     ≔ mut hmr_counter = 0;
@@ -1720,7 +1781,7 @@ rite main() {
         render_border(screen, panes[i].region, title);
         i = i + 1;
     }
-    render_status_bar(screen, " Morgoth v" + VERSION + " | Ctrl-B: leader | q: quit | n/p: focus");
+    render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
     flush_dirty(screen);
 
     // Main event loop
@@ -1737,34 +1798,15 @@ rite main() {
             screen_w = new_ws.cols;
             screen_h = new_ws.rows;
 
-            // Recalculate layout
-            regions = layout_grid(grid_rows, grid_cols, screen_w, screen_h);
+            // Reset zoom on resize
+            zoomed = false;
 
-            // Recreate screen buffer
+            // Recreate screen buffer and relayout all panes
             screen = Grid·new(screen_h, screen_w);
-
-            // Update pane regions, resize VTerms, propagate PTY size
-            ≔ mut ri = 0;
-            ⟳ ri < len(panes) {
-                panes[ri].region = regions[ri];
-                vterm_resize(panes[ri].vterm, regions[ri].h - 2, regions[ri].w - 2);
-                ⎇ panes[ri].alive == true {
-                    Pty·set_size(panes[ri].master_fd, regions[ri].h - 2, regions[ri].w - 2);
-                }
-                ri = ri + 1;
-            }
-
-            // Full redraw
-            ≔ mut di = 0;
-            ⟳ di < len(panes) {
-                ≔ mut t = panes[di].title;
-                ⎇ di == focus {
-                    t = "[" + t + "]";
-                }
-                render_border(screen, panes[di].region, t);
-                di = di + 1;
-            }
-            render_status_bar(screen, " Morgoth v" + VERSION + " | Ctrl-B: leader | q: quit | n/p: focus");
+            ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
+            grid_rows = gl.grid_rows;
+            grid_cols = gl.grid_cols;
+            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
             flush_dirty(screen);
         }
 
@@ -1841,7 +1883,101 @@ rite main() {
                             ≔ esc_seq = from_char_code(27) + input.last_escape_buf;
                             Sys·write(panes[focus].master_fd, esc_seq, len(esc_seq));
                         }
-                    } } } } } } }
+                    } ⎉ { ⎇ action == "create_terminal" {
+                        ⎇ len(panes) < cfg.max_panes {
+                            ≔ tmp_region = Region·new(0, 0, 40, 12);
+                            push(panes, Pane·new(len(panes) - 1, tmp_region, cfg.shell));
+                            focus = len(panes) - 1;
+                            screen = Grid·new(screen_h, screen_w);
+                            ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
+                            grid_rows = gl.grid_rows;
+                            grid_cols = gl.grid_cols;
+                            zoomed = false;
+                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            flush_dirty(screen);
+                        }
+                    } ⎉ { ⎇ action == "create_monitor" {
+                        ⎇ len(panes) < cfg.max_panes {
+                            ≔ tmp_region = Region·new(0, 0, 40, 12);
+                            push(panes, MonitorPane·new(len(panes) - 1, tmp_region));
+                            focus = len(panes) - 1;
+                            screen = Grid·new(screen_h, screen_w);
+                            ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
+                            grid_rows = gl.grid_rows;
+                            grid_cols = gl.grid_cols;
+                            zoomed = false;
+                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            flush_dirty(screen);
+                        }
+                    } ⎉ { ⎇ action == "close_pane" {
+                        ⎇ len(panes) > 1 {
+                            input.confirming_close = true;
+                            render_status_bar(screen, " [close? y/n]");
+                            flush_dirty(screen);
+                        }
+                    } ⎉ { ⎇ action == "close_confirm" {
+                        // Kill the focused pane's process and close fds
+                        ⎇ panes[focus].alive == true {
+                            Sys·kill(panes[focus].pid, SIGTERM());
+                            Sys·waitpid(panes[focus].pid, 0);
+                        }
+                        ⎇ panes[focus].master_fd >= 0 {
+                            Sys·close(panes[focus].master_fd);
+                            Sys·close(panes[focus].slave_fd);
+                        }
+                        // Rebuild panes array excluding closed index
+                        ≔ mut new_panes = [];
+                        ≔ mut ci = 0;
+                        ⟳ ci < len(panes) {
+                            ⎇ ci != focus {
+                                push(new_panes, panes[ci]);
+                            }
+                            ci = ci + 1;
+                        }
+                        panes = new_panes;
+                        // Adjust focus
+                        ⎇ focus >= len(panes) {
+                            focus = len(panes) - 1;
+                        }
+                        // Relayout
+                        screen = Grid·new(screen_h, screen_w);
+                        ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
+                        grid_rows = gl.grid_rows;
+                        grid_cols = gl.grid_cols;
+                        zoomed = false;
+                        render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ action == "close_cancel" {
+                        render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ action == "zoom_toggle" {
+                        ⎇ zoomed == true {
+                            // Unzoom: relayout all panes
+                            zoomed = false;
+                            screen = Grid·new(screen_h, screen_w);
+                            ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
+                            grid_rows = gl.grid_rows;
+                            grid_cols = gl.grid_cols;
+                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            flush_dirty(screen);
+                        } ⎉ {
+                            // Zoom: focused pane fills entire screen minus status bar
+                            zoomed = true;
+                            ≔ zoom_region = Region·new(0, 0, screen_w, screen_h - 1);
+                            panes[focus].region = zoom_region;
+                            vterm_resize(panes[focus].vterm, screen_h - 3, screen_w - 2);
+                            ⎇ panes[focus].alive == true {
+                                Pty·set_size(panes[focus].master_fd, screen_h - 3, screen_w - 2);
+                            }
+                            screen = Grid·new(screen_h, screen_w);
+                            vterm_blit(panes[focus].vterm, screen, panes[focus].region);
+                            ≔ mut zt = panes[focus].title;
+                            zt = "[" + zt + " (zoom)]";
+                            render_border(screen, panes[focus].region, zt);
+                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            flush_dirty(screen);
+                        }
+                    } } } } } } } } } } } } }
 
                     bi = bi + 1;
                 }
@@ -1855,20 +1991,22 @@ rite main() {
                 ⎇ Sys·poll_fd(panes[i].master_fd, 0) == true {
                     ≔ pty_data = Sys·read_string(panes[i].master_fd, 4096);
                     ⎇ pty_data != "" {
-                        // Feed PTY output through VTerm emulator
+                        // Feed PTY output through VTerm emulator (all panes, even during zoom)
                         vterm_feed(panes[i].vterm, pty_data);
                         // Update pane title from VTerm if set by OSC
                         ⎇ panes[i].vterm.title != "" {
                             panes[i].title = panes[i].vterm.title;
                         }
-                        vterm_blit(panes[i].vterm, screen, panes[i].region);
-                        // Re-render border with updated title
-                        ≔ mut bt = panes[i].title;
-                        ⎇ i == focus {
-                            bt = "[" + bt + "]";
+                        // Only render if not zoomed or this is the focused pane
+                        ⎇ zoomed == false ∨ i == focus {
+                            vterm_blit(panes[i].vterm, screen, panes[i].region);
+                            ≔ mut bt = panes[i].title;
+                            ⎇ i == focus {
+                                bt = "[" + bt + "]";
+                            }
+                            render_border(screen, panes[i].region, bt);
+                            flush_dirty(screen);
                         }
-                        render_border(screen, panes[i].region, bt);
-                        flush_dirty(screen);
                     }
                 }
             }
@@ -1884,13 +2022,16 @@ rite main() {
                 ⎇ panes[mi].pane_type == "monitor" {
                     ≔ stats = monitor_load_stats();
                     monitor_render(panes[mi].vterm, stats);
-                    vterm_blit(panes[mi].vterm, screen, panes[mi].region);
-                    ≔ mut mt = panes[mi].title;
-                    ⎇ mi == focus {
-                        mt = "[" + mt + "]";
+                    // Only render if not zoomed or this is the focused pane
+                    ⎇ zoomed == false ∨ mi == focus {
+                        vterm_blit(panes[mi].vterm, screen, panes[mi].region);
+                        ≔ mut mt = panes[mi].title;
+                        ⎇ mi == focus {
+                            mt = "[" + mt + "]";
+                        }
+                        render_border(screen, panes[mi].region, mt);
+                        flush_dirty(screen);
                     }
-                    render_border(screen, panes[mi].region, mt);
-                    flush_dirty(screen);
                 }
                 mi = mi + 1;
             }
