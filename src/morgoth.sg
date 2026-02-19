@@ -931,6 +931,7 @@ rite vterm_feed(vt, data) {
             }
             ⎇ code == 13 { vt.cursor_col = 0; }
             ⎇ code == 10 {
+                vt.cursor_col = 0;  // LF implies CR for internal feeds
                 vt.cursor_row = vt.cursor_row + 1;
                 ⎇ vt.cursor_row > vt.scroll_bottom {
                     vterm_scroll_up(vt);
@@ -1031,24 +1032,38 @@ rite load_config() {
         ≔ j = json_parse(raw);
 
         // Extract grid config
-        ⎇ j.grid != null {
-            ⎇ j.grid.rows != null { cfg.grid_rows = j.grid.rows; }
-            ⎇ j.grid.cols != null { cfg.grid_cols = j.grid.cols; }
+        ≔ j_grid = map_get(j, "grid");
+        ⎇ j_grid != null {
+            ≔ j_rows = map_get(j_grid, "rows");
+            ≔ j_cols = map_get(j_grid, "cols");
+            ⎇ j_rows != null { cfg.grid_rows = j_rows; }
+            ⎇ j_cols != null { cfg.grid_cols = j_cols; }
         }
-        ⎇ j.shell != null { cfg.shell = j.shell; }
-        ⎇ j.scrollback_lines != null { cfg.scrollback_lines = j.scrollback_lines; }
-        ⎇ j.leader_key != null { cfg.leader_key = j.leader_key; }
-        ⎇ j.hmr != null { cfg.hmr = j.hmr; }
+        ≔ j_shell = map_get(j, "shell");
+        ⎇ j_shell != null { cfg.shell = j_shell; }
+        ≔ j_scrollback = map_get(j, "scrollback_lines");
+        ⎇ j_scrollback != null { cfg.scrollback_lines = j_scrollback; }
+        ≔ j_leader = map_get(j, "leader_key");
+        ⎇ j_leader != null { cfg.leader_key = j_leader; }
+        ≔ j_hmr = map_get(j, "hmr");
+        ⎇ j_hmr != null { cfg.hmr = j_hmr; }
 
-        // Extract pane types
-        ⎇ j.panes != null {
+        // Extract pane types (supports both strings and {type: "..."} objects)
+        ≔ j_panes = map_get(j, "panes");
+        ⎇ j_panes != null {
             ≔ mut types = [];
             ≔ mut i = 0;
-            ⟳ i < len(j.panes) {
-                ⎇ j.panes[i].type != null {
-                    push(types, j.panes[i].type);
+            ⟳ i < len(j_panes) {
+                ≔ entry = j_panes[i];
+                ⎇ type_of(entry) == "string" {
+                    push(types, entry);
                 } ⎉ {
-                    push(types, "terminal");
+                    ≔ entry_type = map_get(entry, "type");
+                    ⎇ entry_type != null {
+                        push(types, entry_type);
+                    } ⎉ {
+                        push(types, "terminal");
+                    }
                 }
                 i = i + 1;
             }
@@ -1265,21 +1280,37 @@ rite render_status_bar(grid, text) {
 }
 
 // Flush only dirty cells to stdout using ANSI escape sequences
+// Batches consecutive cells on the same row to avoid redundant cursor positioning
+// which can interfere with multi-byte UTF-8 character rendering.
 rite flush_dirty(grid) {
     ≔ mut buf = "";
     ≔ total = grid.rows * grid.cols;
     ≔ mut i = 0;
+    ≔ mut last_row = -1;
+    ≔ mut last_col = -1;
+    ≔ mut last_fg = -1;
+    ≔ mut last_bg = -1;
     ⟳ i < total {
         ⎇ grid.cells[i].dirty == true {
             ≔ row = i / grid.cols;
             ≔ col = i % grid.cols;
-            // Move cursor: ESC[row;colH (1-indexed)
-            buf = buf + CSI + to_string(row + 1) + ";" + to_string(col + 1) + "H";
-            // Set colors
-            buf = buf + CSI + "38;5;" + to_string(grid.cells[i].fg) + "m";
-            buf = buf + CSI + "48;5;" + to_string(grid.cells[i].bg) + "m";
+            // Only reposition cursor if not consecutive with previous cell
+            ⎇ row != last_row ∨ col != last_col + 1 {
+                buf = buf + CSI + to_string(row + 1) + ";" + to_string(col + 1) + "H";
+            }
+            // Only emit color codes if they changed
+            ⎇ grid.cells[i].fg != last_fg {
+                buf = buf + CSI + "38;5;" + to_string(grid.cells[i].fg) + "m";
+                last_fg = grid.cells[i].fg;
+            }
+            ⎇ grid.cells[i].bg != last_bg {
+                buf = buf + CSI + "48;5;" + to_string(grid.cells[i].bg) + "m";
+                last_bg = grid.cells[i].bg;
+            }
             // Write character
             buf = buf + grid.cells[i].ch;
+            last_row = row;
+            last_col = col;
         }
         i = i + 1;
     }
@@ -1380,6 +1411,9 @@ rite find_pane_at(panes, mx, my) {
 // ============================================================================
 
 rite terminal_init() {
+    // Save terminal state before switching to raw mode
+    ≔ saved = term_get_termios(0);
+    term_set_raw_mode(0);
     // Enter alt screen
     Sys·write(1, ESC + "[?1049h", 8);
     // Enable mouse tracking (SGR mode)
@@ -1389,9 +1423,10 @@ rite terminal_init() {
     Sys·write(1, ESC + "[?25l", 6);
     // Clear screen
     Sys·write(1, ESC + "[2J", 4);
+    ↩ saved;
 }
 
-rite terminal_shutdown() {
+rite terminal_shutdown(saved_termios) {
     // Show cursor
     Sys·write(1, ESC + "[?25h", 6);
     // Disable mouse tracking
@@ -1399,6 +1434,8 @@ rite terminal_shutdown() {
     Sys·write(1, ESC + "[?1006l", 8);
     // Leave alt screen
     Sys·write(1, ESC + "[?1049l", 8);
+    // Restore original terminal state (cooked mode)
+    term_restore_termios(0, saved_termios);
 }
 
 // ============================================================================
@@ -1504,7 +1541,7 @@ rite monitor_render(vt, stats) {
         ≔ mut si = 0;
         ≔ mut sep = " ";
         ⟳ si < vt.cols - 2 {
-            sep = sep + "\xe2\x94\x80";
+            sep = sep + BOX_H;
             si = si + 1;
         }
         vterm_feed(vt, sep + "\n");
@@ -1564,8 +1601,8 @@ rite main() {
     ≔ mut screen_w = winsize.cols;
     ≔ mut screen_h = winsize.rows;
 
-    // Initialize terminal
-    terminal_init();
+    // Initialize terminal (returns saved termios handle for restore on shutdown)
+    ≔ saved_termios = terminal_init();
 
     // Register signal handlers
     Sys·signal_register(SIGWINCH());
@@ -1602,7 +1639,10 @@ rite main() {
 
     // HMR state
     ≔ mut hmr_counter = 0;
-    ≔ mut hmr_last_mtime = fs_mtime(SELF_PATH);
+    ≔ mut hmr_last_mtime = 0;
+    ⎇ cfg.hmr == true ∧ fs_exists(SELF_PATH) == true {
+        hmr_last_mtime = fs_mtime(SELF_PATH);
+    }
 
     // Monitor refresh counter
     ≔ mut monitor_counter = 0;
@@ -1794,13 +1834,17 @@ rite main() {
         }
 
         // HMR: check for source file changes every ~500ms
-        hmr_counter = hmr_counter + 1;
-        ⎇ hmr_counter >= HMR_CHECK_INTERVAL {
-            hmr_counter = 0;
-            ≔ hmr_current_mtime = fs_mtime(SELF_PATH);
-            ⎇ hmr_current_mtime != hmr_last_mtime ∧ hmr_current_mtime > 0 {
-                hmr_last_mtime = hmr_current_mtime;
-                Dev·reload(SELF_PATH);
+        ⎇ cfg.hmr == true {
+            hmr_counter = hmr_counter + 1;
+            ⎇ hmr_counter >= HMR_CHECK_INTERVAL {
+                hmr_counter = 0;
+                ⎇ fs_exists(SELF_PATH) == true {
+                    ≔ hmr_current_mtime = fs_mtime(SELF_PATH);
+                    ⎇ hmr_current_mtime != hmr_last_mtime ∧ hmr_current_mtime > 0 {
+                        hmr_last_mtime = hmr_current_mtime;
+                        Dev·reload(SELF_PATH);
+                    }
+                }
             }
         }
 
@@ -1810,5 +1854,5 @@ rite main() {
 
     // Shutdown
     shutdown_panes(panes);
-    terminal_shutdown();
+    terminal_shutdown(saved_termios);
 }
