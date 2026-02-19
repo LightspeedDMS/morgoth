@@ -1081,28 +1081,18 @@ rite load_config() {
     ≔ config_path = home + "/.morgoth/config.json";
 
     ≔ mut cfg = {
-        grid_rows: 2,
-        grid_cols: 3,
         shell: "/bin/bash",
         scrollback_lines: 1000,
         leader_key: 2,
         hmr: true,
-        max_panes: 12,
-        pane_types: ["terminal", "terminal", "terminal", "terminal", "terminal", "terminal"]
+        max_panes: 12
     };
 
     ⎇ fs_exists(config_path) == true {
         ≔ raw = fs_read(config_path);
         ≔ j = json_parse(raw);
 
-        // Extract grid config
-        ≔ j_grid = map_get(j, "grid");
-        ⎇ j_grid != null {
-            ≔ j_rows = map_get(j_grid, "rows");
-            ≔ j_cols = map_get(j_grid, "cols");
-            ⎇ j_rows != null { cfg.grid_rows = j_rows; }
-            ⎇ j_cols != null { cfg.grid_cols = j_cols; }
-        }
+        // grid and panes keys are ignored (Phase 9: profiles replace static config)
         ≔ j_shell = map_get(j, "shell");
         ⎇ j_shell != null { cfg.shell = j_shell; }
         ≔ j_scrollback = map_get(j, "scrollback_lines");
@@ -1114,30 +1104,44 @@ rite load_config() {
         ≔ j_max = map_get(j, "max_panes");
         ⎇ j_max != null { cfg.max_panes = j_max; }
 
-        // Extract pane types (supports both strings and {type: "..."} objects)
-        ≔ j_panes = map_get(j, "panes");
-        ⎇ j_panes != null {
-            ≔ mut types = [];
-            ≔ mut i = 0;
-            ⟳ i < len(j_panes) {
-                ≔ entry = j_panes[i];
-                ⎇ type_of(entry) == "string" {
-                    push(types, entry);
-                } ⎉ {
-                    ≔ entry_type = map_get(entry, "type");
-                    ⎇ entry_type != null {
-                        push(types, entry_type);
-                    } ⎉ {
-                        push(types, "terminal");
-                    }
-                }
-                i = i + 1;
-            }
-            cfg.pane_types = types;
-        }
     }
 
     ↩ cfg
+}
+
+// Load startup pane types from profile (or default to single terminal)
+rite load_profile() {
+    ≔ home = env("HOME");
+    ≔ profile_path = home + "/.morgoth/profiles/default.json";
+    ≔ mut panes = [];
+    push(panes, "terminal");
+    ⎇ fs_exists(profile_path) == true {
+        ≔ raw = fs_read(profile_path);
+        ≔ j = json_parse(raw);
+        ≔ j_panes = map_get(j, "panes");
+        ⎇ j_panes != null ∧ len(j_panes) > 0 {
+            panes = j_panes;
+        }
+    }
+    ↩ panes
+}
+
+// Save current pane layout to profile
+rite save_profile(panes) {
+    ≔ home = env("HOME");
+    ≔ dir_path = home + "/.morgoth/profiles";
+    ⎇ fs_exists(dir_path) == false {
+        fs_mkdir(dir_path);
+    }
+    ≔ mut types = [];
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        push(types, panes[i].pane_type);
+        i = i + 1;
+    }
+    ≔ profile = { panes: types };
+    ≔ json = json_stringify(profile);
+    fs_write(dir_path + "/default.json", json);
 }
 
 // ============================================================================
@@ -1818,6 +1822,7 @@ rite process_input(input_state, byte, pane_count) {
                 ⎇ byte == 109 { action = "create_monitor"; }
                 ⎇ byte == 120 { action = "close_pane"; }
                 ⎇ byte == 122 { action = "zoom_toggle"; }
+                ⎇ byte == 83  { action = "save_profile"; }
                 ⎇ byte == 91  { action = "copy_enter"; }
             } ⎉ {
                 // Leader key (Ctrl-B)
@@ -2034,13 +2039,22 @@ rite monitor_render(vt, stats) {
 rite main() {
     // Load configuration
     ≔ cfg = load_config();
-    ≔ mut grid_rows = cfg.grid_rows;
-    ≔ mut grid_cols = cfg.grid_cols;
+
+    // Load startup pane types from profile (or default single terminal)
+    ≔ pane_types = load_profile();
+    ≔ grid = recompute_grid(len(pane_types), 24, 80);
+    ≔ mut grid_rows = grid.rows;
+    ≔ mut grid_cols = grid.cols;
 
     // Query real terminal dimensions
     ≔ winsize = term_get_winsize(1);
     ≔ mut screen_w = winsize.cols;
     ≔ mut screen_h = winsize.rows;
+
+    // Recompute grid with actual terminal dimensions
+    ≔ real_grid = recompute_grid(len(pane_types), screen_h, screen_w);
+    grid_rows = real_grid.rows;
+    grid_cols = real_grid.cols;
 
     // Initialize terminal (returns saved termios handle for restore on shutdown)
     ≔ saved_termios = terminal_init();
@@ -2054,15 +2068,11 @@ rite main() {
     // Calculate layout
     ≔ mut regions = layout_grid(grid_rows, grid_cols, screen_w, screen_h);
 
-    // Create panes (route based on config pane_types)
+    // Create panes from profile types
     ≔ mut panes = [];
     ≔ mut i = 0;
-    ⟳ i < len(regions) {
-        ≔ mut ptype = "terminal";
-        ⎇ i < len(cfg.pane_types) {
-            ptype = cfg.pane_types[i];
-        }
-        ⎇ ptype == "monitor" {
+    ⟳ i < len(pane_types) {
+        ⎇ pane_types[i] == "monitor" {
             push(panes, MonitorPane·new(i, regions[i]));
         } ⎉ {
             push(panes, Pane·new(i, regions[i], cfg.shell));
@@ -2350,7 +2360,11 @@ rite main() {
                         render_border(screen, panes[focus].region, ct);
                         render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
                         flush_dirty(screen);
-                    } } } } } } } } } } } } } } } } }
+                    } ⎉ { ⎇ action == "save_profile" {
+                        save_profile(panes);
+                        render_status_bar(screen, " Profile saved");
+                        flush_dirty(screen);
+                    } } } } } } } } } } } } } } } } } }
 
                     bi = bi + 1;
                 }

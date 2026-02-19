@@ -282,3 +282,75 @@ in `collect_fn_sig`/`check_function`). Verified with a direct test: implicit
 returns passed to `starts_with()` and `contains()` work without coercion.
 P2_016 (existing test) also confirms this. The `"" + expr` workaround is no
 longer necessary.
+
+---
+
+## LL-014: Object Literals Are Not Maps
+
+**When:** Phase 9 (Feb 2026)
+**Severity:** High — runtime crash, no compile-time warning
+
+**Problem:** Sigil object literals (`{key: val}`) are a distinct type from maps
+returned by `json_parse()`. Calling `map_get()` or `map_keys()` on an object
+literal fails at runtime with "map_get() requires map" / "map_keys() requires
+map".
+
+```sigil
+// FAILS at runtime
+≔ cfg = { shell: "/bin/bash", max_panes: 12 };
+≔ val = map_get(cfg, "shell");      // Runtime error: map_get() requires map
+≔ keys = map_keys(cfg);             // Runtime error: map_keys() requires map
+
+// WORKS — json_parse returns a map
+≔ j = json_parse("{\"shell\": \"/bin/bash\"}");
+≔ val = map_get(j, "shell");        // OK: "/bin/bash"
+```
+
+**Lesson:** Use `.field` syntax for object literals (it works for both objects
+and maps). Reserve `map_get()` / `map_keys()` for values obtained from
+`json_parse()`. If you need to check whether an object literal has a key, the
+answer is: you already know at write time — it's defined in your source code.
+
+---
+
+## LL-015: Return Type Mismatch With json_parse and Literal Arrays
+
+**When:** Phase 9 (Feb 2026)
+**Severity:** High — type error at compile time
+
+**Problem:** Functions returning either a `json_parse` result (dynamically typed)
+or a literal array (`["terminal"]`) across different branches get a type mismatch
+error: "expected ?N, found [&str; 1]".
+
+```sigil
+// FAILS — two return paths with incompatible types
+rite load_profile() {
+    ⎇ fs_exists(path) == true {
+        ≔ j = json_parse(raw);
+        ↩ map_get(j, "panes")     // dynamic type
+    }
+    ↩ ["terminal"]                 // literal [&str; 1]
+}
+```
+
+**Fix:** Use a single return path with a mutable variable built via `push()`:
+
+```sigil
+rite load_profile() {
+    ≔ mut panes = [];
+    push(panes, "terminal");
+    ⎇ fs_exists(path) == true {
+        ≔ j = json_parse(raw);
+        ≔ j_panes = map_get(j, "panes");
+        ⎇ j_panes != null ∧ len(j_panes) > 0 {
+            panes = j_panes;
+        }
+    }
+    ↩ panes
+}
+```
+
+**Lesson:** When a function may return either a json_parse-derived value or a
+fallback, use a mutable variable initialized with `push()` (creating a dynamic
+array) and reassign it from the json path. This keeps a single return point
+with a consistent dynamic type.

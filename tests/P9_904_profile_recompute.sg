@@ -1,0 +1,73 @@
+// Test: Profile with 4 panes → grid computed by recompute_grid, not hardcoded
+// Spec: Phase 9 - Dynamic Startup + Profiles
+// Priority: P9
+
+rite recompute_grid(num_panes, screen_h, screen_w) {
+    ≔ usable_h = screen_h - 1;
+    ≔ mut best_rows = 1;
+    ≔ mut best_cols = num_panes;
+    ≔ mut best_diff = 999999;
+    ≔ mut r = 1;
+    ⟳ r * r <= num_panes {
+        ≔ c = (num_panes + r - 1) / r;
+        ≔ pane_h = usable_h / r;
+        ≔ pane_w = screen_w / c;
+        ≔ mut diff = pane_w - pane_h * 2;
+        ⎇ diff < 0 { diff = 0 - diff; }
+        ⎇ diff < best_diff {
+            best_diff = diff;
+            best_rows = r;
+            best_cols = c;
+        }
+        r = r + 1;
+    }
+    ↩ { rows: best_rows, cols: best_cols }
+}
+
+rite load_profile_sim(profile_json) {
+    ≔ mut panes = [];
+    push(panes, "terminal");
+    ≔ j = json_parse(profile_json);
+    ≔ j_panes = map_get(j, "panes");
+    ⎇ j_panes != null ∧ len(j_panes) > 0 {
+        panes = j_panes;
+    }
+    ↩ panes
+}
+
+rite main() {
+    // Profile with 4 panes
+    ≔ profile_json = "{\"panes\": [\"terminal\", \"terminal\", \"monitor\", \"terminal\"]}";
+    ≔ pane_types = load_profile_sim(profile_json);
+
+    ⎇ len(pane_types) == 4 {
+        println("pane_count: OK");
+    } ⎉ {
+        println("pane_count: FAILED got=" + to_string(len(pane_types)));
+    }
+
+    // recompute_grid for 4 panes on 80x24 → should be 2x2
+    ≔ grid = recompute_grid(4, 24, 80);
+    ⎇ grid.rows == 2 ∧ grid.cols == 2 {
+        println("grid_2x2: OK");
+    } ⎉ {
+        println("grid_2x2: FAILED rows=" + to_string(grid.rows) + " cols=" + to_string(grid.cols));
+    }
+
+    // Verify grid is dynamically computed, not stored in profile
+    ≔ j = json_parse(profile_json);
+    ≔ has_grid = map_get(j, "grid");
+    ⎇ has_grid == null {
+        println("no_grid_in_profile: OK");
+    } ⎉ {
+        println("no_grid_in_profile: FAILED");
+    }
+
+    // 6 panes on 80x24 → should be 2x3
+    ≔ grid6 = recompute_grid(6, 24, 80);
+    ⎇ grid6.rows == 2 ∧ grid6.cols == 3 {
+        println("grid_6_panes: OK");
+    } ⎉ {
+        println("grid_6_panes: FAILED rows=" + to_string(grid6.rows) + " cols=" + to_string(grid6.cols));
+    }
+}
