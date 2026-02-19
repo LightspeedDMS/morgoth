@@ -1,0 +1,90 @@
+// Test: Smartcase search — lowercase = insensitive, uppercase = sensitive
+// Spec: Phase 10 - Scrollback Search
+// Priority: P10
+
+rite find_all_matches(text_lines, query) {
+    ≔ mut matches = [];
+    ⎇ query == "" { ↩ matches }
+    ≔ mut case_sensitive = false;
+    ≔ mut qi = 0;
+    ⟳ qi < len(query) {
+        ≔ c = char_code_at(query, qi);
+        ⎇ c >= 65 ∧ c <= 90 { case_sensitive = true; }
+        qi = qi + 1;
+    }
+    ≔ mut search_q = query;
+    ⎇ case_sensitive == false { search_q = lower(query); }
+    ≔ mut row = 0;
+    ⟳ row < len(text_lines) {
+        ≔ mut line = text_lines[row];
+        ⎇ case_sensitive == false { line = lower(line); }
+        ≔ mut col = 0;
+        ≔ mut remaining = line;
+        ⟳ len(remaining) >= len(search_q) {
+            ≔ idx = index_of(remaining, search_q);
+            ⎇ idx >= 0 {
+                push(matches, {row: row, col: col + idx});
+                col = col + idx + 1;
+                remaining = substring(line, col, len(line));
+            } ⎉ {
+                remaining = "";
+            }
+        }
+        row = row + 1;
+    }
+    ↩ matches
+}
+
+rite main() {
+    ≔ lines = ["Hello World", "hello world", "HELLO WORLD"];
+
+    // Test 1: lowercase query "hello" → case-insensitive, finds all 3
+    ≔ m1 = find_all_matches(lines, "hello");
+    ⎇ len(m1) == 3 {
+        println("insensitive_count: OK");
+    } ⎉ {
+        println("insensitive_count: FAILED got=" + to_string(len(m1)));
+    }
+
+    // Test 2: uppercase query "Hello" → case-sensitive, finds only row 0
+    ≔ m2 = find_all_matches(lines, "Hello");
+    ⎇ len(m2) == 1 {
+        println("sensitive_count: OK");
+    } ⎉ {
+        println("sensitive_count: FAILED got=" + to_string(len(m2)));
+    }
+    ⎇ m2[0].row == 0 {
+        println("sensitive_row: OK");
+    } ⎉ {
+        println("sensitive_row: FAILED");
+    }
+
+    // Test 3: mixed case query "HELLO" → case-sensitive, finds only row 2
+    ≔ m3 = find_all_matches(lines, "HELLO");
+    ⎇ len(m3) == 1 {
+        println("allcaps_count: OK");
+    } ⎉ {
+        println("allcaps_count: FAILED got=" + to_string(len(m3)));
+    }
+    ⎇ m3[0].row == 2 {
+        println("allcaps_row: OK");
+    } ⎉ {
+        println("allcaps_row: FAILED");
+    }
+
+    // Test 4: lowercase query "world" → finds all 3
+    ≔ m4 = find_all_matches(lines, "world");
+    ⎇ len(m4) == 3 {
+        println("world_insensitive: OK");
+    } ⎉ {
+        println("world_insensitive: FAILED got=" + to_string(len(m4)));
+    }
+
+    // Test 5: query with mixed "hELLO" → case-sensitive (has uppercase), finds none exact
+    ≔ m5 = find_all_matches(lines, "hELLO");
+    ⎇ len(m5) == 0 {
+        println("mixed_no_match: OK");
+    } ⎉ {
+        println("mixed_no_match: FAILED got=" + to_string(len(m5)));
+    }
+}

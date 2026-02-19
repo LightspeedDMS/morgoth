@@ -1,0 +1,7 @@
+insensitive_count: OK
+sensitive_count: OK
+sensitive_row: OK
+allcaps_count: OK
+allcaps_row: OK
+world_insensitive: OK
+mixed_no_match: OK

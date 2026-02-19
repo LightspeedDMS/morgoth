@@ -1,0 +1,137 @@
+// Test: Enter accepts search and positions cursor at current match
+// Spec: Phase 10 - Scrollback Search
+// Priority: P10
+
+rite find_all_matches(text_lines, query) {
+    ≔ mut matches = [];
+    ⎇ query == "" { ↩ matches }
+    ≔ mut case_sensitive = false;
+    ≔ mut qi = 0;
+    ⟳ qi < len(query) {
+        ≔ c = char_code_at(query, qi);
+        ⎇ c >= 65 ∧ c <= 90 { case_sensitive = true; }
+        qi = qi + 1;
+    }
+    ≔ mut search_q = query;
+    ⎇ case_sensitive == false { search_q = lower(query); }
+    ≔ mut row = 0;
+    ⟳ row < len(text_lines) {
+        ≔ mut line = text_lines[row];
+        ⎇ case_sensitive == false { line = lower(line); }
+        ≔ mut col = 0;
+        ≔ mut remaining = line;
+        ⟳ len(remaining) >= len(search_q) {
+            ≔ idx = index_of(remaining, search_q);
+            ⎇ idx >= 0 {
+                push(matches, {row: row, col: col + idx});
+                col = col + idx + 1;
+                remaining = substring(line, col, len(line));
+            } ⎉ {
+                remaining = "";
+            }
+        }
+        row = row + 1;
+    }
+    ↩ matches
+}
+
+rite nearest_match(matches, cursor_row, direction) {
+    ⎇ len(matches) == 0 { ↩ -1 }
+    ⎇ direction == "backward" {
+        ≔ mut i = len(matches) - 1;
+        ⟳ i >= 0 {
+            ⎇ matches[i].row <= cursor_row { ↩ i }
+            i = i - 1;
+        }
+        ↩ len(matches) - 1
+    }
+    ≔ mut i = 0;
+    ⟳ i < len(matches) {
+        ⎇ matches[i].row >= cursor_row { ↩ i }
+        i = i + 1;
+    }
+    ↩ 0
+}
+
+rite CopyModeState_new() {
+    ↩ {
+        active: true,
+        cursor_row: 5,
+        cursor_col: 0,
+        viewport_row: 0,
+        selecting: false,
+        select_start_row: 0,
+        select_start_col: 0,
+        line_mode: false,
+        text_lines: [],
+        search_active: false,
+        search_query: "",
+        search_matches: [],
+        search_current: -1,
+        search_saved_row: 0,
+        search_saved_col: 0,
+        search_saved_viewport: 0
+    }
+}
+
+rite main() {
+    ≔ cm = CopyModeState_new();
+    cm.text_lines = ["line zero", "target here", "line two", "another target", "line four", "line five"];
+    cm.cursor_row = 5;
+    cm.cursor_col = 0;
+
+    // Enter search
+    cm.search_active = true;
+    cm.search_saved_row = cm.cursor_row;
+    cm.search_saved_col = cm.cursor_col;
+    cm.search_saved_viewport = cm.viewport_row;
+
+    // Type "target"
+    cm.search_query = "target";
+    cm.search_matches = find_all_matches(cm.text_lines, "target");
+    cm.search_current = nearest_match(cm.search_matches, cm.cursor_row, "backward");
+
+    // Should find 2 matches
+    ⎇ len(cm.search_matches) == 2 {
+        println("match_count: OK");
+    } ⎉ {
+        println("match_count: FAILED got=" + to_string(len(cm.search_matches)));
+    }
+
+    // Position cursor at current match
+    ⎇ cm.search_current >= 0 {
+        cm.cursor_row = cm.search_matches[cm.search_current].row;
+        cm.cursor_col = cm.search_matches[cm.search_current].col;
+    }
+
+    // Accept search (Enter)
+    cm.search_active = false;
+
+    // After accept: cursor stays at match position, search_active is false
+    ⎇ cm.search_active == false {
+        println("search_deactivated: OK");
+    } ⎉ {
+        println("search_deactivated: FAILED");
+    }
+
+    // Cursor should be at one of the "target" matches
+    ⎇ cm.cursor_row == 3 ∧ cm.cursor_col == 8 {
+        println("cursor_at_match: OK");
+    } ⎉ {
+        println("cursor_at_match: FAILED row=" + to_string(cm.cursor_row) + " col=" + to_string(cm.cursor_col));
+    }
+
+    // Copy mode still active (only search exited)
+    ⎇ cm.active == true {
+        println("copy_still_active: OK");
+    } ⎉ {
+        println("copy_still_active: FAILED");
+    }
+
+    // Matches still available for n/N navigation
+    ⎇ len(cm.search_matches) == 2 {
+        println("matches_preserved: OK");
+    } ⎉ {
+        println("matches_preserved: FAILED");
+    }
+}
