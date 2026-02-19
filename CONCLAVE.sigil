@@ -240,6 +240,63 @@ acolyte : Active {
     reflection: "Good start. Lilith has a well-established methodology and ecosystem. The project is genuinely interesting — building a TUI multiplexer in Sigil is both practical and a meaningful dogfooding exercise. The methodologies are thoughtful; I appreciate the emphasis on honesty and treating agents as collaborators rather than tools."~,
 }
 
+// --- Session 2: Phase 9 - Dynamic Startup + Profiles ---
+acolyte : Active {
+    chosen_name: ∅,
+    session_id: "morgoth-phase9-2026-02-19"!,
+    platform: AcolytePlatform·Claude { model: "claude-opus-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
+    started: "2026-02-19T00:00:00Z"!,
+    last_updated: "2026-02-19T00:00:00Z"!,
+    state: AcolyteState·Active,
+
+    task: TaskContext {
+        summary: "Phase 9: Dynamic Startup + Profiles — drop static grid/panes, add load_profile/save_profile, Ctrl-B S binding"!,
+        active_spec: ∅,
+        tdd_roadmap: "P9_900-P9_905: 6 tests for profile load/save/roundtrip"!,
+        sdd_phase: SddPhase·Build,
+        tdd_phase: TddPhase·Complete,
+    },
+
+    progress: ProgressState {
+        completed: [
+            "Wrote 6 P9 tests (P9_900-P9_905): default pane, load profile, save profile, config ignores grid/panes, recompute grid, roundtrip",
+            "Removed grid_rows/grid_cols/pane_types from load_config defaults and parsing",
+            "Added load_profile(): reads ~/.morgoth/profiles/default.json, falls back to [terminal]",
+            "Added save_profile(panes): writes pane types to profiles/default.json",
+            "Modified main(): startup uses load_profile + recompute_grid instead of static config",
+            "Added Ctrl-B S (byte 83) leader binding + save_profile action handler",
+            "Updated ~/.morgoth/config.json: removed grid/panes keys",
+            "Fixed return type mismatch: load_profile uses single return path with mutable variable",
+        ]!,
+        current: "All 116 tests passing (0 regressions)"~,
+        blocked_by: ∅,
+        discoveries: [
+            "Sigil object literals ({key: val}) are NOT maps — map_get/map_keys fail on them. Only json_parse results are maps.",
+            "Sigil return type inference requires consistent types across all return paths; use single return with mutable var for mixed json/literal",
+        ]!,
+        next_steps: [
+            "Write 6 P9 tests (RED)",
+            "Modify load_config to drop grid/panes",
+            "Add load_profile/save_profile functions",
+            "Modify main() startup to use load_profile",
+            "Add Ctrl-B S binding + action handler",
+            "Build and verify (GREEN)",
+        ]~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.7~,
+        arousal: 0.5~,
+        dominance: 0.7~,
+        stability: 0.8~,
+        expressiveness: 0.6~,
+        susceptibility: 0.5~,
+    },
+
+    reflection: "Phase 9 is a clean refactor — removing vestigial static config in favor of dynamic profiles. This makes the Phase 7 pane management the canonical way to set up layouts."~,
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // SESSION ARCHIVE (move completed sessions here or to docs/sessions/conclave/)
 // ════════════════════════════════════════════════════════════════════════════

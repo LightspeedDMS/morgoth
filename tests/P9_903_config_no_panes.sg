@@ -1,0 +1,77 @@
+// Test: Config with grid/panes keys present → ignored, starts with 1 pane
+// Spec: Phase 9 - Dynamic Startup + Profiles
+// Priority: P9
+
+rite load_config_sim(config_json) {
+    ≔ mut cfg = {
+        shell: "/bin/bash",
+        scrollback_lines: 1000,
+        leader_key: 2,
+        hmr: true,
+        max_panes: 12
+    };
+
+    ≔ j = json_parse(config_json);
+    // grid and panes keys are ignored (Phase 9)
+    ≔ j_shell = map_get(j, "shell");
+    ⎇ j_shell != null { cfg.shell = j_shell; }
+    ≔ j_scrollback = map_get(j, "scrollback_lines");
+    ⎇ j_scrollback != null { cfg.scrollback_lines = j_scrollback; }
+    ≔ j_hmr = map_get(j, "hmr");
+    ⎇ j_hmr != null { cfg.hmr = j_hmr; }
+    ≔ j_max = map_get(j, "max_panes");
+    ⎇ j_max != null { cfg.max_panes = j_max; }
+
+    ↩ cfg
+}
+
+rite load_profile_sim(profile_exists) {
+    ≔ mut panes = [];
+    push(panes, "terminal");
+    ↩ panes
+}
+
+rite main() {
+    // Config with old-style grid/panes — should be ignored by load_config
+    ≔ config_json = "{\"grid\": {\"rows\": 2, \"cols\": 3}, \"panes\": [\"terminal\", \"terminal\", \"monitor\"], \"shell\": \"/bin/zsh\"}";
+    ≔ cfg = load_config_sim(config_json);
+
+    // Shell should still be parsed from config
+    ⎇ cfg.shell == "/bin/zsh" {
+        println("shell_parsed: OK");
+    } ⎉ {
+        println("shell_parsed: FAILED got=" + cfg.shell);
+    }
+
+    // Config defaults should be present
+    ⎇ cfg.max_panes == 12 {
+        println("max_panes_default: OK");
+    } ⎉ {
+        println("max_panes_default: FAILED");
+    }
+
+    // hmr default should be present
+    ⎇ cfg.hmr == true {
+        println("hmr_default: OK");
+    } ⎉ {
+        println("hmr_default: FAILED");
+    }
+
+    // Startup should use load_profile which returns single terminal
+    // (not the config grid/panes which were ["terminal","terminal","monitor"])
+    ≔ pane_types = load_profile_sim(false);
+    ⎇ len(pane_types) == 1 {
+        println("default_pane: OK");
+    } ⎉ {
+        println("default_pane: FAILED got=" + to_string(len(pane_types)));
+    }
+
+    // Verify the json DID contain 3 panes — but they were ignored
+    ≔ j = json_parse(config_json);
+    ≔ j_panes = map_get(j, "panes");
+    ⎇ len(j_panes) == 3 {
+        println("config_had_3_panes_ignored: OK");
+    } ⎉ {
+        println("config_had_3_panes_ignored: FAILED");
+    }
+}

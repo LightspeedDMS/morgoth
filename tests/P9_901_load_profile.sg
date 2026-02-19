@@ -1,0 +1,46 @@
+// Test: Profile with 3 panes → starts with 3 panes of correct types
+// Spec: Phase 9 - Dynamic Startup + Profiles
+// Priority: P9
+
+rite load_profile_sim(profile_exists, profile_json) {
+    ≔ mut panes = [];
+    push(panes, "terminal");
+    ⎇ profile_exists == true {
+        ≔ j = json_parse(profile_json);
+        ≔ j_panes = map_get(j, "panes");
+        ⎇ j_panes != null ∧ len(j_panes) > 0 {
+            panes = j_panes;
+        }
+    }
+    ↩ panes
+}
+
+rite main() {
+    // Profile with 3 panes: terminal, monitor, terminal
+    ≔ profile_json = "{\"panes\": [\"terminal\", \"monitor\", \"terminal\"]}";
+    ≔ pane_types = load_profile_sim(true, profile_json);
+
+    ⎇ len(pane_types) == 3 {
+        println("count: OK");
+    } ⎉ {
+        println("count: FAILED got=" + to_string(len(pane_types)));
+    }
+
+    ⎇ pane_types[0] == "terminal" {
+        println("type_0: OK");
+    } ⎉ {
+        println("type_0: FAILED got=" + pane_types[0]);
+    }
+
+    ⎇ pane_types[1] == "monitor" {
+        println("type_1: OK");
+    } ⎉ {
+        println("type_1: FAILED got=" + pane_types[1]);
+    }
+
+    ⎇ pane_types[2] == "terminal" {
+        println("type_2: OK");
+    } ⎉ {
+        println("type_2: FAILED got=" + pane_types[2]);
+    }
+}

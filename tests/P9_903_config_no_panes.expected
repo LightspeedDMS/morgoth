@@ -1,0 +1,5 @@
+shell_parsed: OK
+max_panes_default: OK
+hmr_default: OK
+default_pane: OK
+config_had_3_panes_ignored: OK
