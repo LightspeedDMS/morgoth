@@ -166,16 +166,17 @@ Use `map_keys(obj)` to enumerate available keys.
 **Date:** 2026-02-18
 **Phase:** Phase 2 (Monitor plugin)
 **Severity:** High
+**Status:** ✅ RESOLVED (2026-02-18)
 
-Functions with multiple `↩` (return) statements in different `⎇` branches can
-trigger "type mismatch in return" errors, even when all branches return the
-same type. The type checker appears to struggle with divergent control flow.
+Functions with multiple `↩` (return) statements in different `⎇` branches
+previously triggered "type mismatch in return" errors. The root cause was that
+`collect_fn_sig` and `check_function` used `Type::Unit` for unannotated return
+types — fresh type variables now unify with any return type.
 
-**Fix:** Use a `≔ mut result` variable, assign in each branch, and have a
-single `↩ result` at the end.
-
-**Lesson:** Prefer single-return-point functions in Sigil. Accumulate the
-result in a mutable variable rather than using early returns.
+**Resolution:** The type checker fix (commit 1452796) resolved this. Regression
+tests P2_017–P2_020 confirm `↩` works with int, array, null, and multi-branch
+returns. The `≔ mut result` workaround is no longer necessary — both styles
+(early `↩` and single-return-point) work correctly.
 
 ---
 
@@ -222,3 +223,134 @@ on the stdin environment.
 
 **Lesson:** When adding native syscall fallbacks, audit all tests that rely on
 specific fd behavior. Tests run in piped environments, not real terminals.
+
+---
+
+## LL-012: Flat ⎇ Blocks Cause State Machine Fall-Through
+
+**When:** Phase 3 code review (Feb 2026)
+**Severity:** P0 — broke ALL escape sequences in production morgoth.sg
+
+**Problem:** vterm_feed used flat (independent) `⎇` blocks for each state:
+
+```sigil
+⎇ vt.esc_state == "normal" { ... }   // sets state = "escape"
+⎇ vt.esc_state == "escape" { ... }   // FIRES SAME ITERATION — resets to "normal"
+⎇ vt.esc_state == "csi" { ... }
+```
+
+Each `⎇` is evaluated independently. When the normal handler sets
+`esc_state = "escape"`, the escape handler immediately fires on the SAME byte,
+resetting state to "normal". Result: ESC is consumed and discarded, no CSI/OSC/DCS
+sequence can ever be entered.
+
+**Why not caught:** All test files define their OWN `vterm_feed` with correct
+`⎇`/`⎉` chains. They never exercise the production code in morgoth.sg.
+
+**Fix:** Replace flat `⎇` with a single `⎇`/`⎉` chain so exactly one state
+handler fires per byte:
+
+```sigil
+⎇ vt.esc_state == "csi" { ... }
+⎉ { ⎇ vt.esc_state == "osc" { ... }
+⎉ { ⎇ vt.esc_state == "escape" { ... }
+⎉ { /* normal */ } } }
+```
+
+**Prevention:** Added integration test P3_350 that uses the production `⎇`/`⎉`
+chain structure to catch divergence between test copies and production code.
+
+**Rule:** In Sigil, NEVER use flat `⎇` blocks when one handler can change
+the state variable checked by a subsequent handler. Always use `⎇`/`⎉` chains
+for state machines and dispatch tables.
+
+---
+
+## LL-013: starts_with() Fails Type Inference on Implicit Returns
+
+**When:** Phase 3 test fixes (Feb 2026)
+**Severity:** P2 — type checker bug, workaround available
+**Status:** ✅ RESOLVED (2026-02-18)
+
+**Problem:** `starts_with(fn_result, prefix)` previously failed with "type
+mismatch: expected str, found ()" when the function returned a string via
+implicit return. This was the same root cause as LL-009 — `Type::Unit` default
+for unannotated return types.
+
+**Resolution:** Fixed by the same type inference change (fresh type variables
+in `collect_fn_sig`/`check_function`). Verified with a direct test: implicit
+returns passed to `starts_with()` and `contains()` work without coercion.
+P2_016 (existing test) also confirms this. The `"" + expr` workaround is no
+longer necessary.
+
+---
+
+## LL-014: Object Literals Are Not Maps
+
+**When:** Phase 9 (Feb 2026)
+**Severity:** High — runtime crash, no compile-time warning
+
+**Problem:** Sigil object literals (`{key: val}`) are a distinct type from maps
+returned by `json_parse()`. Calling `map_get()` or `map_keys()` on an object
+literal fails at runtime with "map_get() requires map" / "map_keys() requires
+map".
+
+```sigil
+// FAILS at runtime
+≔ cfg = { shell: "/bin/bash", max_panes: 12 };
+≔ val = map_get(cfg, "shell");      // Runtime error: map_get() requires map
+≔ keys = map_keys(cfg);             // Runtime error: map_keys() requires map
+
+// WORKS — json_parse returns a map
+≔ j = json_parse("{\"shell\": \"/bin/bash\"}");
+≔ val = map_get(j, "shell");        // OK: "/bin/bash"
+```
+
+**Lesson:** Use `.field` syntax for object literals (it works for both objects
+and maps). Reserve `map_get()` / `map_keys()` for values obtained from
+`json_parse()`. If you need to check whether an object literal has a key, the
+answer is: you already know at write time — it's defined in your source code.
+
+---
+
+## LL-015: Return Type Mismatch With json_parse and Literal Arrays
+
+**When:** Phase 9 (Feb 2026)
+**Severity:** High — type error at compile time
+
+**Problem:** Functions returning either a `json_parse` result (dynamically typed)
+or a literal array (`["terminal"]`) across different branches get a type mismatch
+error: "expected ?N, found [&str; 1]".
+
+```sigil
+// FAILS — two return paths with incompatible types
+rite load_profile() {
+    ⎇ fs_exists(path) == true {
+        ≔ j = json_parse(raw);
+        ↩ map_get(j, "panes")     // dynamic type
+    }
+    ↩ ["terminal"]                 // literal [&str; 1]
+}
+```
+
+**Fix:** Use a single return path with a mutable variable built via `push()`:
+
+```sigil
+rite load_profile() {
+    ≔ mut panes = [];
+    push(panes, "terminal");
+    ⎇ fs_exists(path) == true {
+        ≔ j = json_parse(raw);
+        ≔ j_panes = map_get(j, "panes");
+        ⎇ j_panes != null ∧ len(j_panes) > 0 {
+            panes = j_panes;
+        }
+    }
+    ↩ panes
+}
+```
+
+**Lesson:** When a function may return either a json_parse-derived value or a
+fallback, use a mutable variable initialized with `push()` (creating a dynamic
+array) and reassign it from the json path. This keeps a single return point
+with a consistent dynamic type.

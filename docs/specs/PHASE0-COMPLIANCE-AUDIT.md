@@ -362,14 +362,19 @@ interpreter-mode simulations are now internally consistent:
 - **Sys·close:** cleans up all state maps (pipe, pty, pty buffer, epoll)
 - **Dead code eliminated:** FAKE_TERMIOS_STATE now read by restore, mouse parse returns errors
 
-Two items remain accepted-deferred for Phase 1:
-- Sys·spawn vs real fork/exec (needed for PTY-attached child processes)
-- Real native PTY allocation via openpty()
+~~Two items remain accepted-deferred for Phase 1:~~
+~~- Sys·spawn vs real fork/exec (needed for PTY-attached child processes)~~
+~~- Real native PTY allocation via openpty()~~
 
-**Test results:** 769/774 passing (99%), 0 regressions. All 30 native runtime
-tests pass including 4 new roundtrip assertions.
+**Update (2026-02-18):** Both deferred items are now resolved:
+- **Sys·spawn_pty** (Phase 1) provides fork + setsid + pty attachment + exec
+  as a single high-level call, replacing the need for raw Sys·fork/Sys·execve.
+- **Native libc fallbacks** (Phase 2) added real ioctl TIOCGWINSZ and libc::poll.
+  Real openpty() is used by Sys·spawn_pty in native mode.
 
-**Recommendation:** Phase 0 is complete. Proceed to Phase 1 (core Morgoth).
+**Test results:** 862/866 passing (99%), 0 regressions.
+
+**Status:** Phase 0 is complete. All deferred items resolved in Phases 1–2.
 
 ---
 

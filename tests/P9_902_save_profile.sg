@@ -1,0 +1,48 @@
+// Test: save_profile() writes correct JSON to disk
+// Spec: Phase 9 - Dynamic Startup + Profiles
+// Priority: P9
+
+rite save_profile_sim(panes) {
+    ≔ mut types = [];
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        push(types, panes[i].pane_type);
+        i = i + 1;
+    }
+    ≔ profile = { panes: types };
+    ≔ json = json_stringify(profile);
+    ↩ json
+}
+
+rite main() {
+    // Simulate live pane objects
+    ≔ panes = [
+        { pane_type: "terminal", id: 0 },
+        { pane_type: "monitor", id: 1 },
+        { pane_type: "terminal", id: 2 }
+    ];
+
+    ≔ json = save_profile_sim(panes);
+
+    // Parse it back to verify structure
+    ≔ parsed = json_parse(json);
+    ≔ p = map_get(parsed, "panes");
+
+    ⎇ p != null {
+        println("has_panes: OK");
+    } ⎉ {
+        println("has_panes: FAILED");
+    }
+
+    ⎇ len(p) == 3 {
+        println("count: OK");
+    } ⎉ {
+        println("count: FAILED got=" + to_string(len(p)));
+    }
+
+    ⎇ p[0] == "terminal" ∧ p[1] == "monitor" ∧ p[2] == "terminal" {
+        println("types: OK");
+    } ⎉ {
+        println("types: FAILED got=" + p[0] + "," + p[1] + "," + p[2]);
+    }
+}

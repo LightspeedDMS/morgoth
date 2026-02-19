@@ -1,8 +1,8 @@
 # Morgoth Specification
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Status:** Draft
-**Date:** 2026-02-17
+**Date:** 2026-02-18
 **Authors:** Lilith + Claude (Opus 4.6)
 
 ---
@@ -43,13 +43,11 @@ Terminal ← Morgoth manages the physical terminal
 
 ## 2. Compiler & Stdlib Prerequisites
 
-**Status:** ⚠️ **GAP IDENTIFIED** (reassessed on fix/dogfooding-styx-parser branch)
+**Status:** ✅ **ALL RESOLVED** (Phases 0–3 complete as of 2026-02-18)
 
-Audit of Sigil's stdlib on `fix/dogfooding-styx-parser` (2026-02-17) reveals
-that while the new Sys module (Phase 24) provides a syscall foundation and
-epoll-based I/O multiplexing, several OS-level primitives required by Morgoth
-are not yet implemented. These MUST be addressed before core Morgoth development
-can proceed.
+All OS-level primitives required by Morgoth have been implemented in the Sigil
+stdlib. Phase 0 extended register_sys and register_terminal with interpreter-mode
+simulations; Phase 2 added native libc fallbacks for critical paths.
 
 ### 2.1 Current Capabilities
 
@@ -66,48 +64,52 @@ can proceed.
 | Networking (socket/connect/bind/listen) | ✅ | stdlib: register_sys |
 | Memory mapping (Sys·mmap/munmap) | ✅ | stdlib: register_sys |
 | I/O multiplexing (epoll) | ✅ | stdlib: Sys·epoll_create1/ctl/wait |
-| Syscall constants (pipe/dup/dup2/poll) | ⚠️ Constants only | rt/sys/linux_x64.sg |
+| Pipe creation (Sys·pipe, Sys·dup2) | ✅ | stdlib: register_sys (Phase 0.4) |
+| Raw terminal mode (termios) | ✅ | stdlib: term_get_termios/set_raw_mode/restore_termios (Phase 0.2) |
+| PTY creation and I/O | ✅ | stdlib: Pty·open/set_size/get_name + I/O buffer (Phase 0.6) |
+| Window size query/set | ✅ | stdlib: term_get_winsize/set_winsize + native ioctl (Phase 0.3/2.0) |
+| Process spawn with PTY | ✅ | stdlib: Sys·spawn/spawn_bg/spawn_pty (Phase 0.5/1.0) |
+| Process lifecycle | ✅ | stdlib: Sys·kill/waitpid (Phase 1.0) |
+| Signal handling | ✅ | stdlib: signal_register/pending/send (Phase 0.7) |
+| Mouse event capture | ✅ | stdlib: term_enable/disable_mouse, term_parse_mouse_event (Phase 0.8) |
+| Alternate screen buffer | ✅ | stdlib: term_enter/leave_alt_screen (Phase 0.1) |
+| FD polling | ✅ | stdlib: Sys·poll_fd + native libc::poll (Phase 1.0/2.0) |
+| String FD read | ✅ | stdlib: Sys·read_string (Phase 1.0) |
 
-### 2.2 Required Primitives (Still Missing)
+### 2.2 Design Decisions
 
-| Primitive | Purpose | Priority | Notes |
-|-----------|---------|----------|-------|
-| Raw terminal mode (termios) | Keystroke-level input | CRITICAL | No termios structs or tcgetattr/tcsetattr |
-| PTY creation (openpty/forkpty) | Virtual terminal pairs | CRITICAL | No PTY support at all |
-| PTY read/write | Relay I/O to hosted processes | CRITICAL | Depends on PTY creation |
-| Window size query (TIOCGWINSZ) | Determine terminal dimensions | CRITICAL | No ioctl terminal wrappers |
-| Window size set (TIOCSWINSZ) | Propagate resize to child PTYs | CRITICAL | No ioctl terminal wrappers |
-| Process spawn (fork/exec) | Start Claude Code with PTY | CRITICAL | SYS constants exist, no wrappers |
-| Pipe creation (pipe/dup2) | I/O redirection for child processes | CRITICAL | SYS_PIPE/DUP/DUP2 constants exist, no wrappers |
-| Signal handling (SIGWINCH/SIGCHLD) | Resize detection, child exit | HIGH | No signal infrastructure |
-| Mouse event capture | Parse xterm mouse protocol | MEDIUM | No mouse input support |
-| Alternate screen buffer | Enter/exit smcup/rmcup | MEDIUM | Trivial escape sequences |
+- **Sys·spawn_pty instead of fork/exec**: The spec originally called for
+  `Sys·fork` + `Sys·execve`. Instead, a higher-level `Sys·spawn_pty(cmd, args,
+  slave_fd)` was implemented, which handles fork, setsid, pty attachment, and
+  exec internally. This is safer and covers the Morgoth use case directly.
+  Raw `Sys·fork`/`Sys·execve` were not implemented and are not needed.
 
-### 2.3 Implementation Order
+- **Native libc fallbacks**: Phase 2 added `#[cfg(all(unix, feature = "native"))]`
+  fallbacks for `term_get_winsize` (ioctl TIOCGWINSZ) and `Sys·poll_fd`
+  (libc::poll), providing real behavior when running on Linux.
 
-Per SDD methodology — prerequisites before dependents.
-
-The existing Sys module (register_sys, Phase 24) establishes the pattern:
-syscall wrappers in stdlib.rs with interpreter-level simulation. The remaining
-primitives follow this same approach. Syscall constants for pipe, dup, dup2,
-and poll already exist in `parser/src/rt/sys/linux_x64.sg`.
+### 2.3 Phase History
 
 ```
-Phase 0: Stdlib Extensions (extend register_sys / register_terminal)
+Phase 0: Stdlib Extensions — COMPLETE
+  0.1  Alternate screen buffer (smcup/rmcup)        ✅
+  0.2  Raw terminal mode (termios get/set)           ✅
+  0.3  Window size query/set (ioctl TIOCGWINSZ)      ✅
+  0.4  Pipe creation (Sys·pipe, Sys·dup2)            ✅
+  0.5  Process spawn (Sys·spawn, Sys·spawn_pty)      ✅
+  0.6  PTY creation and I/O (Pty·open + buffer)      ✅
+  0.7  Signal handling (register/pending/send)       ✅
+  0.8  Mouse event protocol (xterm SGR mode)         ✅
 
-  0.1  Alternate screen buffer (smcup/rmcup)        ← TRIVIAL (escape sequences only)
-  0.2  Raw terminal mode (termios get/set)           ← BLOCKING
-  0.3  Window size query/set (ioctl TIOCGWINSZ)      ← BLOCKING
-  0.4  Pipe creation (Sys·pipe, Sys·dup2)            ← BLOCKING (constants exist)
-  0.5  Process spawn (Sys·fork, Sys·execve)          ← BLOCKING (constants exist)
-  0.6  PTY creation and I/O (openpty, read, write)   ← BLOCKING
-  0.7  Signal handling (SIGWINCH, SIGCHLD)            ← HIGH
-  0.8  Mouse event protocol (xterm SGR mode)          ← MEDIUM
-       Epoll already available for multiplexed I/O    ← RESOLVED
+Phase 1: Core Morgoth — COMPLETE
+  Layout engine, rendering, input routing, shutdown
+  Sys·read_string, Sys·poll_fd, Sys·spawn_bg, Sys·spawn_pty, Sys·kill, Sys·waitpid
 
-Phase 1: Core Morgoth (depends on Phase 0)
-Phase 2: Monitoring Plugin
-Phase 3: Cross-Instance Communication
+Phase 2: VTerm + Monitor Plugin — COMPLETE
+  ANSI state machine, scrollback, JSON config, system monitor, native fallbacks
+
+Phase 3: Extended Terminal Emulation — COMPLETE
+  DEC private modes, alternate screen, OSC/DCS, additional CSI, input forwarding
 ```
 
 ### 2.4 Approach
@@ -697,3 +699,4 @@ Invariant: Terminal MUST be restored regardless of exit path (normal, error, sig
 |---------|------|---------|
 | 0.1.0 | 2026-02-17 | Initial draft. Documented stdlib gaps as Phase 0 prerequisites. |
 | 0.1.1 | 2026-02-17 | Reassessed on fix/dogfooding-styx-parser branch. Epoll resolved (Sys module Phase 24). Updated Phase 0 ordering. Syscall constants for pipe/dup/dup2/poll confirmed present. |
+| 0.2.0 | 2026-02-18 | Spec audit: Section 2 rewritten — all 10 "missing" primitives now implemented (Phases 0–3). Updated phase history and design decisions. |

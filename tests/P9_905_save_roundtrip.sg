@@ -1,0 +1,85 @@
+// Test: Save then load: pane types preserved exactly
+// Spec: Phase 9 - Dynamic Startup + Profiles
+// Priority: P9
+
+rite save_profile_to_json(panes) {
+    ≔ mut types = [];
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        push(types, panes[i].pane_type);
+        i = i + 1;
+    }
+    ≔ profile = { panes: types };
+    ↩ json_stringify(profile)
+}
+
+rite load_profile_from_json(json_str) {
+    ≔ mut panes = [];
+    push(panes, "terminal");
+    ≔ j = json_parse(json_str);
+    ≔ j_panes = map_get(j, "panes");
+    ⎇ j_panes != null ∧ len(j_panes) > 0 {
+        panes = j_panes;
+    }
+    ↩ panes
+}
+
+rite main() {
+    // Simulate pane objects with various types
+    ≔ original_panes = [
+        { pane_type: "terminal", id: 0 },
+        { pane_type: "monitor", id: 1 },
+        { pane_type: "terminal", id: 2 },
+        { pane_type: "monitor", id: 3 },
+        { pane_type: "terminal", id: 4 }
+    ];
+
+    // Save (serialize)
+    ≔ saved_json = save_profile_to_json(original_panes);
+
+    // Load (deserialize)
+    ≔ loaded_types = load_profile_from_json(saved_json);
+
+    // Verify count matches
+    ⎇ len(loaded_types) == 5 {
+        println("roundtrip_count: OK");
+    } ⎉ {
+        println("roundtrip_count: FAILED got=" + to_string(len(loaded_types)));
+    }
+
+    // Verify each type matches original
+    ≔ mut all_match = true;
+    ≔ mut i = 0;
+    ⟳ i < len(original_panes) {
+        ⎇ loaded_types[i] != original_panes[i].pane_type {
+            all_match = false;
+            println("mismatch at " + to_string(i) + ": expected=" + original_panes[i].pane_type + " got=" + loaded_types[i]);
+        }
+        i = i + 1;
+    }
+
+    ⎇ all_match == true {
+        println("roundtrip_types: OK");
+    } ⎉ {
+        println("roundtrip_types: FAILED");
+    }
+
+    // Edge case: single pane roundtrip
+    ≔ single_panes = [{ pane_type: "monitor", id: 0 }];
+    ≔ single_json = save_profile_to_json(single_panes);
+    ≔ single_loaded = load_profile_from_json(single_json);
+    ⎇ len(single_loaded) == 1 ∧ single_loaded[0] == "monitor" {
+        println("single_roundtrip: OK");
+    } ⎉ {
+        println("single_roundtrip: FAILED");
+    }
+
+    // Edge case: empty panes array → defaults to ["terminal"]
+    ≔ empty_json = "{\"panes\": []}";
+    ≔ empty_loaded = load_profile_from_json(empty_json);
+    ⎇ len(empty_loaded) == 1 ∧ empty_loaded[0] == "terminal" {
+        println("empty_fallback: OK");
+    } ⎉ {
+        println("empty_fallback: FAILED got=" + to_string(len(empty_loaded)));
+    }
+}

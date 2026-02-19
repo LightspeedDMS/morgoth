@@ -43,6 +43,11 @@ morgoth/
 ├── docs/
 │   ├── sessions/conclave/     # Archived session records
 │   └── specs/                 # Specifications
+├── src/
+│   └── morgoth.sg             # Main application (~2400 lines)
+├── tests/                     # Behavioral tests (.sg + .expected)
+├── run_tests.sh               # Test runner
+├── launch.sh                  # Safe terminal launcher
 ├── CONCLAVE.sigil             # Agent session registry
 ├── DESIGN-NOTES.md            # High-level design notes
 └── LESSONS-LEARNED.md         # Organizational memory

@@ -1,0 +1,64 @@
+// Test: No profile, no config panes → starts with 1 terminal pane
+// Spec: Phase 9 - Dynamic Startup + Profiles
+// Priority: P9
+
+// Simulate load_profile when no profile file exists
+rite load_profile_sim(profile_exists, profile_json) {
+    ≔ mut panes = [];
+    push(panes, "terminal");
+    ⎇ profile_exists == true {
+        ≔ j = json_parse(profile_json);
+        ≔ j_panes = map_get(j, "panes");
+        ⎇ j_panes != null ∧ len(j_panes) > 0 {
+            panes = j_panes;
+        }
+    }
+    ↩ panes
+}
+
+rite recompute_grid_sim(num_panes, screen_h, screen_w) {
+    ≔ usable_h = screen_h - 1;
+    ≔ mut best_rows = 1;
+    ≔ mut best_cols = num_panes;
+    ≔ mut best_diff = 999999;
+    ≔ mut r = 1;
+    ⟳ r * r <= num_panes {
+        ≔ c = (num_panes + r - 1) / r;
+        ≔ pane_h = usable_h / r;
+        ≔ pane_w = screen_w / c;
+        ≔ mut diff = pane_w - pane_h * 2;
+        ⎇ diff < 0 { diff = 0 - diff; }
+        ⎇ diff < best_diff {
+            best_diff = diff;
+            best_rows = r;
+            best_cols = c;
+        }
+        r = r + 1;
+    }
+    ↩ { rows: best_rows, cols: best_cols }
+}
+
+rite main() {
+    // No profile file exists → default to single terminal
+    ≔ pane_types = load_profile_sim(false, "");
+
+    ⎇ len(pane_types) == 1 {
+        println("count: OK");
+    } ⎉ {
+        println("count: FAILED got=" + to_string(len(pane_types)));
+    }
+
+    ⎇ pane_types[0] == "terminal" {
+        println("type: OK");
+    } ⎉ {
+        println("type: FAILED got=" + pane_types[0]);
+    }
+
+    // Verify recompute_grid for 1 pane gives 1x1
+    ≔ grid = recompute_grid_sim(1, 24, 80);
+    ⎇ grid.rows == 1 ∧ grid.cols == 1 {
+        println("grid_1x1: OK");
+    } ⎉ {
+        println("grid_1x1: FAILED rows=" + to_string(grid.rows) + " cols=" + to_string(grid.cols));
+    }
+}

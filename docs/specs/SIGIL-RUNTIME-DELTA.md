@@ -117,19 +117,23 @@ from inside that scope is not permitted.
 
 ### 4.2 Multiple Return Type Inference
 
-Functions with multiple `↩` (return) statements in different `⎇` branches can
-trigger type inference failures, even when all branches return the same type.
+~~Functions with multiple `↩` (return) statements in different `⎇` branches can
+trigger type inference failures, even when all branches return the same type.~~
 
-**Workaround:** Use a single `≔ mut result` variable, assign in each branch,
-return once at the end.
+**Status:** ✅ RESOLVED (2026-02-18). The type checker's `collect_fn_sig` and
+`check_function` now use fresh type variables instead of `Type::Unit` for
+unannotated return types, allowing `↩` with any type. Regression tests
+P2_017–P2_020 confirm `↩` works with int, array, null, and multi-branch returns.
 
 ### 4.3 Middledot (·) Naming
 
-The middledot character `·` in function names (e.g., `Region·new`) is reserved
+~~The middledot character `·` in function names (e.g., `Region·new`) is reserved
 for stdlib-defined functions. User-defined functions cannot use middledot in
-their names.
+their names.~~
 
-**Workaround:** Use underscore naming: `make_region()`, `vterm_new()`.
+**Status:** ✅ RESOLVED (2026-02-18, commit eefaeac). The parser now allows
+middledot in user-defined function names. morgoth.sg uses `Cell·new`,
+`Region·new`, `Pane·new`, `VTerm·new`, etc.
 
 ---
 
