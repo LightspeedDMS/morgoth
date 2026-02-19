@@ -163,6 +163,16 @@ rite vterm_resize(vterm, new_rows, new_cols) {
 }
 ```
 
+**Spec Gap (discovered during implementation):** The pseudocode above treats
+`vterm.cells` as a 2D array of rows (`vterm.cells[row]`), but the actual
+implementation uses a **flat 1D array** indexed as `row * cols + col`. When
+extracting rows for scrollback, each row must be built by iterating columns:
+`vt.cells[i * old_cols + c]` for `c` in `0..old_cols`. Scrollback itself IS
+2D (array of row-arrays). See `vterm_scroll_up` for the canonical pattern.
+
+Additionally, the scrollback limit field is `scrollback_max` (not
+`scrollback_cap` as shown in the pseudocode).
+
 This preserves scrollback content and visible cells, pushing overflow rows
 into the scrollback buffer when the terminal shrinks.
 
@@ -239,6 +249,10 @@ This is the same outer-dims bug as in the SIGWINCH handler (section 2.3).
 | P6_602 | VTerm resize adjusts cell grid dimensions | P2 |
 | P6_603 | Content outside new bounds moves to scrollback | Edge case |
 | P6_604 | Initial spawn sets PTY size to pane inner dims | 4.3 |
+| P6_605 | Growing grid adds blank cells, preserves existing content | Expand path |
+| P6_606 | Same-size resize preserves cells unchanged | Noop path |
+| P6_607 | scroll_offset resets to 0 after resize (shrink, expand, same) | 2.4 step 5 |
+| P6_608 | scrollback_max enforced during resize overflow push | Eviction |
 
 ### E2E Validation
 

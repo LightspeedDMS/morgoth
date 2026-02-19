@@ -66,7 +66,7 @@ rite Region·new(x, y, w, h) {
 // A Pane: owns a PTY, a shell process, and a screen region
 rite Pane·new(id, region) {
     ≔ pty = Pty·open();
-    Pty·set_size(pty.master_fd, region.h, region.w);
+    Pty·set_size(pty.master_fd, region.h - 2, region.w - 2);
 
     ≔ pid = Sys·spawn_pty(DEFAULT_SHELL, [], pty.slave_fd);
 
@@ -197,6 +197,69 @@ rite vterm_scroll_up(vt) {
         vt.cells[idx] = {ch: " ", fg: 7, bg: 0};
         col = col + 1;
     }
+}
+
+// Resize the VTerm grid in-place, preserving scrollback
+rite vterm_resize(vt, new_rows, new_cols) {
+    ≔ old_rows = vt.rows;
+    ≔ old_cols = vt.cols;
+
+    // 1. Push overflow rows to scrollback (shrink only, main screen only)
+    ⎇ new_rows < old_rows ∧ vt.in_alt_screen == false {
+        ≔ overflow = old_rows - new_rows;
+        ≔ mut i = 0;
+        ⟳ i < overflow {
+            ≔ mut row_cells = [];
+            ≔ mut c = 0;
+            ⟳ c < old_cols {
+                push(row_cells, vt.cells[i * old_cols + c]);
+                c = c + 1;
+            }
+            push(vt.scrollback, row_cells);
+            i = i + 1;
+        }
+        ⟳ len(vt.scrollback) > vt.scrollback_max {
+            ≔ mut trimmed = [];
+            ≔ mut ti = 1;
+            ⟳ ti < len(vt.scrollback) {
+                push(trimmed, vt.scrollback[ti]);
+                ti = ti + 1;
+            }
+            vt.scrollback = trimmed;
+        }
+    }
+
+    // 2. Build new flat cell array
+    ≔ mut new_cells = [];
+    ≔ mut r = 0;
+    ⟳ r < new_rows {
+        ≔ old_r = r + (old_rows - new_rows);
+        ≔ mut c = 0;
+        ⟳ c < new_cols {
+            ⎇ old_r >= 0 ∧ old_r < old_rows ∧ c < old_cols {
+                push(new_cells, vt.cells[old_r * old_cols + c]);
+            } ⎉ {
+                push(new_cells, {ch: " ", fg: 7, bg: 0});
+            }
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // 3. Update state
+    vt.cells = new_cells;
+    vt.rows = new_rows;
+    vt.cols = new_cols;
+    vt.scroll_top = 0;
+    vt.scroll_bottom = new_rows - 1;
+    vt.scroll_offset = 0;
+
+    // 4. Clamp cursor
+    ⎇ vt.cursor_row >= new_rows { vt.cursor_row = new_rows - 1; }
+    ⎇ vt.cursor_col >= new_cols { vt.cursor_col = new_cols - 1; }
+
+    // 5. Discard alt screen (rebuilt on next enter)
+    vt.alt_cells = [];
 }
 
 // Write a printable character at the cursor position
@@ -1680,13 +1743,13 @@ rite main() {
             // Recreate screen buffer
             screen = Grid·new(screen_h, screen_w);
 
-            // Update pane regions, resize PTYs, recreate VTerms
+            // Update pane regions, resize VTerms, propagate PTY size
             ≔ mut ri = 0;
             ⟳ ri < len(panes) {
                 panes[ri].region = regions[ri];
-                panes[ri].vterm = VTerm·new(regions[ri].h - 2, regions[ri].w - 2);
+                vterm_resize(panes[ri].vterm, regions[ri].h - 2, regions[ri].w - 2);
                 ⎇ panes[ri].alive == true {
-                    Pty·set_size(panes[ri].master_fd, regions[ri].h, regions[ri].w);
+                    Pty·set_size(panes[ri].master_fd, regions[ri].h - 2, regions[ri].w - 2);
                 }
                 ri = ri + 1;
             }
