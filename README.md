@@ -165,10 +165,24 @@ The system monitor pane reads from:
 It also runs `git rev-parse --abbrev-ref HEAD` to show the current branch.
 
 When Morgoth runs inside tmux, `bin/claude-pipe.sh` bridges copy mode to
-Claude Code's input: yanking text (`Enter` in copy mode) writes to
-`~/.morgoth/claude-in.txt`, and the pipe script injects it as literal
-keystrokes into the focused Claude Code pane. The text appears in Claude's
-input box ready to edit and submit.
+Claude Code's input box:
+
+```mermaid
+flowchart LR
+    U([user]) -->|keystrokes| M[Morgoth]
+    M -->|PTY master write| CC["Claude Code\n(terminal pane)"]
+    CC -->|"OSC 2 title\n✳ Claude Code"| M
+
+    M -->|"^B+[ · select · Enter"| F["~/.morgoth/\nclaude-in.txt"]
+    F -->|"watches every 1s"| P["claude-pipe.sh\n(background process)"]
+    P -->|"tmux send-keys\n$TMUX_PANE"| M
+    M -->|passthrough| CC
+```
+
+Yanking text in copy mode writes to `~/.morgoth/claude-in.txt`. The pipe
+script detects the change, sends it as literal keystrokes to Morgoth's tmux
+pane, and Morgoth forwards it to the focused Claude Code terminal. The text
+appears in Claude's input box ready to edit and submit.
 
 ## Tests
 

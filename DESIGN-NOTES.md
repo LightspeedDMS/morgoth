@@ -34,6 +34,20 @@ Morgoth is a single-file Sigil application (`src/morgoth.sg`, ~3300 lines).
 | Shutdown | `SIGTERM` → wait → `SIGKILL` → restore terminal |
 | Event Loop | Batch poll, adaptive sleep, PTY drain, coalesced flush |
 
+### Data Flow: PTY Output to Screen
+
+```mermaid
+flowchart LR
+    A["child process\n(bash / claude)"] -->|"writes to\nPTY slave"| B["kernel\nline discipline"]
+    B -->|"PTY master fd\nMorgoth owns"| C["Sys·read_string\n16 KB chunks"]
+    C --> D["vterm_feed\nANSI parser"]
+    D --> E["VTerm.cells[]\nch · fg · bg\ncursor · scrollback"]
+    E --> F["render_pane\ninto region"]
+    F --> G["Grid.cells[]\ndirty flags"]
+    G --> H["flush_dirty\nANSI + SGR sequences"]
+    H -->|"write to stdout"| I["host terminal\n(tmux pane)"]
+```
+
 ### Event Loop
 
 ```
@@ -72,16 +86,57 @@ main loop:
 
 ### VTerm State Machine
 
-```
-normal ──ESC──→ escape ──[──→ csi ──final_byte──→ normal
-                               └──?──→ dec_private
-                               └──<──→ sgr_mouse (ignored)
-       ──ESC]──→ osc ──ST/BEL──→ normal   (captures title)
-       ──ESC P──→ dcs ──ST──────→ normal   (pass-through)
+```mermaid
+stateDiagram-v2
+    [*] --> normal
+
+    normal --> escape : ESC (0x1B)
+    normal --> normal : printable or control char
+
+    escape --> csi     : [
+    escape --> osc     : ]
+    escape --> dcs     : P
+    escape --> normal  : other (discard)
+
+    csi --> dec_private : prefix ?
+    csi --> sgr_mouse   : prefix <
+    csi --> csi         : param byte (0x20–0x3F)
+    csi --> normal      : final byte (0x40–0x7E) — dispatch
+
+    dec_private --> normal : final byte — set/clear DEC mode
+    sgr_mouse   --> normal : final byte — silently ignored
+
+    osc --> normal : ST (ESC \) or BEL — set pane title
+    dcs --> normal : ST (ESC \) — pass-through
 ```
 
 SGR attributes are stored per-cell as integers. True color uses a packed
 encoding: `256 + R*65536 + G*256 + B` distinguishes 24-bit from 256-color.
+
+### Input Routing
+
+Each byte from stdin passes through a fixed-priority intercept chain. The
+order matters: copy mode must catch `/` before the leader handler sees it,
+and quit confirmation must catch `y` before passthrough sends it to bash.
+
+```mermaid
+flowchart TD
+    A([byte from stdin]) --> B{copy mode\nactive?}
+    B -- yes --> C[copy / search\nkey handlers]
+    B -- no  --> D{confirming\nquit?}
+    D -- yes --> E["y → quit_confirm\nn → quit_cancel"]
+    D -- no  --> F{confirming\nclose?}
+    F -- yes --> G["y → close_confirm\nn → close_cancel"]
+    F -- no  --> H{in escape\nsequence?}
+    H -- yes --> I[accumulate esc_buf\nor dispatch mouse / focus]
+    H -- no  --> J{ESC byte?}
+    J -- yes --> K[enter escape state]
+    J -- no  --> L{leader\nactive?}
+    L -- yes --> M["leader command\nc m x z [ S p | - ? 1–9 ^B q"]
+    L -- no  --> N{byte ==\nleader key?}
+    N -- yes --> O[activate leader mode]
+    N -- no  --> P["passthrough\nSys·write(pane.master_fd, byte)"]
+```
 
 ### Grid Layout Algorithm
 
