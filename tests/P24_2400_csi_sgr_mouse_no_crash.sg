@@ -1,0 +1,146 @@
+// Test: CSI < prefix (SGR mouse from child process) is silently ignored, not crashed
+// Spec: Phase 24 - Real-world bug fixes
+// Priority: P24
+//
+// Before fix: vterm_parse_params would call to_int("<0") when receiving
+// ESC[<0;10;5M (SGR mouse from child like Claude Code), crashing with
+// "cannot parse '<' as integer".
+// After fix: < prefix is stripped in vterm_csi_dispatch like ? for DEC modes.
+
+rite VTerm_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, {ch: " ", fg: 7, bg: 0});
+        i = i + 1;
+    }
+    ↩ {
+        cells: cells, rows: rows, cols: cols,
+        cursor_row: 0, cursor_col: 0,
+        attr_fg: 7, attr_bg: 0,
+        esc_state: "normal", esc_buf: "",
+        scroll_top: 0, scroll_bottom: rows - 1,
+        saved_row: 0, saved_col: 0,
+        scrollback: [], scrollback_max: 1000, scroll_offset: 0,
+        alt_cells: [], alt_cursor_row: 0, alt_cursor_col: 0,
+        alt_attr_fg: 7, alt_attr_bg: 0,
+        in_alt_screen: false, cursor_visible: true,
+        app_cursor_keys: false, auto_wrap: true,
+        bracketed_paste: false, mouse_mode: 0,
+        mouse_sgr: false, origin_mode: false, title: ""
+    }
+}
+
+rite vterm_parse_params(buf) {
+    ≔ mut params = [];
+    ⎇ buf != "" {
+        ≔ parts = split(buf, ";");
+        ≔ mut i = 0;
+        ⟳ i < len(parts) {
+            ⎇ parts[i] == "" { push(params, 0); } ⎉ { push(params, to_int(parts[i])); }
+            i = i + 1;
+        }
+    }
+    params
+}
+
+rite vterm_set_dec_mode(vt, mode, enabled) {
+    ⎇ mode == 25 { vt.cursor_visible = enabled; }
+}
+
+rite vterm_dec_private_dispatch(vt, cmd, buf) {
+    ≔ params = vterm_parse_params(buf);
+    ≔ mut enabled = false;
+    ⎇ cmd == "h" { enabled = true; }
+    ≔ mut i = 0;
+    ⟳ i < len(params) {
+        vterm_set_dec_mode(vt, params[i], enabled);
+        i = i + 1;
+    }
+}
+
+rite vterm_csi_dispatch(vt, cmd, buf) {
+    ≔ mut dec_handled = false;
+    ⎇ len(buf) > 0 ∧ starts_with(buf, "?") == true {
+        ≔ stripped = substring(buf, 1, len(buf));
+        vterm_dec_private_dispatch(vt, cmd, stripped);
+        dec_handled = true;
+    }
+    // SGR mouse from child process: CSI < prefix — strip and ignore
+    ⎇ dec_handled == false ∧ len(buf) > 0 ∧ starts_with(buf, "<") == true {
+        dec_handled = true;
+    }
+    ⎇ dec_handled == false {
+        ≔ params = vterm_parse_params(buf);
+        ⎇ cmd == "H" {
+            ≔ mut row = 0;
+            ≔ mut col = 0;
+            ⎇ len(params) >= 1 ∧ params[0] > 0 { row = params[0] - 1; }
+            ⎇ len(params) >= 2 ∧ params[1] > 0 { col = params[1] - 1; }
+            vt.cursor_row = row;
+            vt.cursor_col = col;
+        }
+    }
+}
+
+rite vterm_feed(vt, data) {
+    ≔ mut i = 0;
+    ⟳ i < len(data) {
+        ≔ ch = to_string(char_at(data, i));
+        ≔ code = char_code_at(data, i);
+        ⎇ vt.esc_state == "csi" {
+            ⎇ (code >= 64 ∧ code <= 90) ∨ (code >= 97 ∧ code <= 122) {
+                vterm_csi_dispatch(vt, ch, vt.esc_buf);
+                vt.esc_state = "normal";
+                vt.esc_buf = "";
+            } ⎉ {
+                vt.esc_buf = vt.esc_buf + ch;
+            }
+        } ⎉ {
+            ⎇ vt.esc_state == "escape" {
+                ⎇ ch == "[" { vt.esc_state = "csi"; vt.esc_buf = ""; }
+                ⎉ { vt.esc_state = "normal"; }
+            } ⎉ {
+                ⎇ code == 27 { vt.esc_state = "escape"; vt.esc_buf = ""; }
+            }
+        }
+        i = i + 1;
+    }
+}
+
+rite main() {
+    ≔ vt = VTerm_new(24, 80);
+
+    // Feed SGR mouse press: ESC[<0;10;5M — previously crashed with to_int("<0")
+    vterm_feed(vt, "\x1b[<0;10;5M");
+    ⎇ vt.cursor_row == 0 ∧ vt.cursor_col == 0 {
+        println("sgr_press_no_crash: OK");
+    } ⎉ {
+        println("sgr_press_no_crash: FAILED cursor=" + to_string(vt.cursor_row) + "," + to_string(vt.cursor_col));
+    }
+
+    // Feed SGR mouse motion: ESC[<32;15;8M
+    vterm_feed(vt, "\x1b[<32;15;8M");
+    ⎇ vt.cursor_row == 0 ∧ vt.cursor_col == 0 {
+        println("sgr_motion_no_crash: OK");
+    } ⎉ {
+        println("sgr_motion_no_crash: FAILED");
+    }
+
+    // Feed SGR mouse release: ESC[<0;10;5m (lowercase)
+    vterm_feed(vt, "\x1b[<0;10;5m");
+    ⎇ vt.cursor_row == 0 ∧ vt.cursor_col == 0 {
+        println("sgr_release_no_crash: OK");
+    } ⎉ {
+        println("sgr_release_no_crash: FAILED");
+    }
+
+    // Confirm vterm still functional: CUP to row 5, col 10
+    vterm_feed(vt, "\x1b[5;10H");
+    ⎇ vt.cursor_row == 4 ∧ vt.cursor_col == 9 {
+        println("vterm_still_functional: OK");
+    } ⎉ {
+        println("vterm_still_functional: FAILED cursor=" + to_string(vt.cursor_row) + "," + to_string(vt.cursor_col));
+    }
+}

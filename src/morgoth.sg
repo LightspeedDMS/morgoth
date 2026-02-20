@@ -3013,10 +3013,10 @@ rite main() {
     ⎇ cfg.session_restore == true {
         ≔ sess_data = load_session();
         ⎇ sess_data != null {
-            render_status_bar(screen, " Restore last session? [y/N]");
+            render_status_bar(screen, " Restore last session? [y/N]  (3s)");
             flush_dirty(screen);
-            // Non-blocking check — restore if user already typed 'y'
-            ⎇ Sys·poll_fd(0, 0) == true {
+            // Block up to 3s for user response, then auto-decline
+            ⎇ Sys·poll_fd(0, 3000) == true {
                 ≔ resp = Sys·read_string(0, 1);
                 ⎇ resp == "y" ∨ resp == "Y" {
                     ≔ mut ri = 0;
