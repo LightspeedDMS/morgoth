@@ -3671,6 +3671,11 @@ rite main() {
                 }
                 mi = mi + 1;
             }
+            // Refresh status bar on monitor tick to clear transient messages
+            ⎇ input.copy_mode.active == false ∧ input.confirming_close == false ∧ input.confirming_quit == false ∧ input.showing_help == false ∧ input.showing_picker == false {
+                render_status_bar_styled(screen, focus, panes, "normal");
+                any_pane_rendered = true;
+            }
         }
 
         // Coalesced flush — single flush per iteration instead of per-pane
