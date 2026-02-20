@@ -1478,7 +1478,7 @@ rite render_profile_picker(grid, region, profiles, selected) {
         } ⎉ {
             line = "  " + pname;
         }
-        ≔ fg = 7;
+        ≔ mut fg = 7;
         ⎇ pi == selected { fg = 11; }
         ≔ mut lc = 0;
         ⟳ lc < len(line) ∧ lc < inner_w {
