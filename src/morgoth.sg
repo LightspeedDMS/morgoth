@@ -37,6 +37,14 @@
 ≔ BOX_RJ = "┤";
 ≔ BOX_X  = "┼";
 
+// Double-line box-drawing characters (Unicode) for focused panes
+≔ BOX2_H  = "═";
+≔ BOX2_V  = "║";
+≔ BOX2_TL = "╔";
+≔ BOX2_TR = "╗";
+≔ BOX2_BL = "╚";
+≔ BOX2_BR = "╝";
+
 // ============================================================================
 // Section 2: Data Structures
 // ============================================================================
@@ -1192,9 +1200,9 @@ rite relayout_panes(panes, screen_w, screen_h, screen, focus) {
             Pty·set_size(panes[i].master_fd, regions[i].h - 2, regions[i].w - 2);
         }
         vterm_blit(panes[i].vterm, screen, panes[i].region);
-        ≔ mut t = panes[i].title;
-        ⎇ i == focus { t = "[" + t + "]"; }
-        render_border(screen, panes[i].region, t);
+        ≔ t = pane_title(panes[i], i, focus);
+        ≔ tc = border_colors(panes[i].pane_type, i == focus);
+        render_border(screen, panes[i].region, t, tc.border_fg, tc.title_fg, i == focus);
         i = i + 1;
     }
     flush_dirty(screen);
@@ -1314,36 +1322,70 @@ rite Grid·clear_dirty(grid) {
 // Section 5: Rendering
 // ============================================================================
 
+// Build a pane title string with index prefix, bracketed when focused
+rite pane_title(pane, index, focus) {
+    ≔ num = to_string(index + 1);
+    ≔ base = num + ":" + pane.title;
+    ⎇ index == focus { ↩ "[" + base + "]" }
+    ↩ base
+}
+
+// Return border and title foreground colors for a pane type + focus state
+rite border_colors(pane_type, is_focused) {
+    ⎇ pane_type == "monitor" {
+        ⎇ is_focused == true { ↩ {border_fg: 13, title_fg: 15} }
+        ↩ {border_fg: 5, title_fg: 5}
+    }
+    ⎇ is_focused == true { ↩ {border_fg: 14, title_fg: 15} }
+    ↩ {border_fg: 8, title_fg: 8}
+}
+
 // Draw a border around a region in the grid
-rite render_border(grid, region, title) {
+rite render_border(grid, region, title, border_fg, title_fg, is_focused) {
     ≔ x = region.x;
     ≔ y = region.y;
     ≔ w = region.w;
     ≔ h = region.h;
 
+    // Select box-drawing chars based on focus
+    ≔ mut bh = BOX_H;
+    ≔ mut bv = BOX_V;
+    ≔ mut btl = BOX_TL;
+    ≔ mut btr = BOX_TR;
+    ≔ mut bbl = BOX_BL;
+    ≔ mut bbr = BOX_BR;
+    ⎇ is_focused == true {
+        bh = BOX2_H;
+        bv = BOX2_V;
+        btl = BOX2_TL;
+        btr = BOX2_TR;
+        bbl = BOX2_BL;
+        bbr = BOX2_BR;
+    }
+
     // Top edge
-    Grid·set(grid, y, x, BOX_TL, 6, 0);
+    Grid·set(grid, y, x, btl, border_fg, 0);
     ≔ mut c = 1;
     ⟳ c < w - 1 {
-        Grid·set(grid, y, x + c, BOX_H, 6, 0);
+        Grid·set(grid, y, x + c, bh, border_fg, 0);
         c = c + 1;
     }
-    Grid·set(grid, y, x + w - 1, BOX_TR, 6, 0);
+    Grid·set(grid, y, x + w - 1, btr, border_fg, 0);
 
     // Bottom edge
-    Grid·set(grid, y + h - 1, x, BOX_BL, 6, 0);
+    Grid·set(grid, y + h - 1, x, bbl, border_fg, 0);
     c = 1;
     ⟳ c < w - 1 {
-        Grid·set(grid, y + h - 1, x + c, BOX_H, 6, 0);
+        Grid·set(grid, y + h - 1, x + c, bh, border_fg, 0);
         c = c + 1;
     }
-    Grid·set(grid, y + h - 1, x + w - 1, BOX_BR, 6, 0);
+    Grid·set(grid, y + h - 1, x + w - 1, bbr, border_fg, 0);
 
     // Side edges
     ≔ mut r = 1;
     ⟳ r < h - 1 {
-        Grid·set(grid, y + r, x, BOX_V, 6, 0);
-        Grid·set(grid, y + r, x + w - 1, BOX_V, 6, 0);
+        Grid·set(grid, y + r, x, bv, border_fg, 0);
+        Grid·set(grid, y + r, x + w - 1, bv, border_fg, 0);
         r = r + 1;
     }
 
@@ -1355,11 +1397,11 @@ rite render_border(grid, region, title) {
             ≔ mut tw = 0;
             ⟳ ti < len(title) ∧ tw < max_title_cols {
                 ≔ tch = to_string(char_at(title, ti));
-                Grid·set(grid, y, x + 2 + tw, tch, 15, 0);
+                Grid·set(grid, y, x + 2 + tw, tch, title_fg, 0);
                 ⎇ is_fullwidth(tch) == true {
                     // Placeholder for second column of fullwidth char
                     ⎇ tw + 1 < max_title_cols {
-                        Grid·set(grid, y, x + 2 + tw + 1, "", 15, 0);
+                        Grid·set(grid, y, x + 2 + tw + 1, "", title_fg, 0);
                     }
                     tw = tw + 2;
                 } ⎉ {
@@ -1425,6 +1467,82 @@ rite render_status_bar(grid, text) {
     ⟳ i < len(text) ∧ i < grid.cols {
         Grid·set(grid, row, i, to_string(char_at(text, i)), 0, 7);
         i = i + 1;
+    }
+}
+
+// Render styled status bar with mode pill, pane info, hints, and version
+rite render_status_bar_styled(grid, focus, panes, mode) {
+    ≔ row = grid.rows - 1;
+    ≔ mut col = 0;
+    // Fill row with spaces (fg=7, bg=0)
+    ⟳ col < grid.cols {
+        Grid·set(grid, row, col, " ", 7, 0);
+        col = col + 1;
+    }
+    col = 0;
+
+    // 1. Mode pill
+    ≔ mut pill = " NORMAL ";
+    ≔ mut pill_bg = 2;
+    ⎇ mode == "copy" {
+        pill = " COPY ";
+        pill_bg = 3;
+    } ⎉ { ⎇ mode == "search" {
+        pill = " SEARCH ";
+        pill_bg = 5;
+    } ⎉ { ⎇ mode == "confirm" {
+        pill = " CONFIRM ";
+        pill_bg = 1;
+    } } }
+    ≔ mut pi = 0;
+    ⟳ pi < len(pill) ∧ col < grid.cols {
+        Grid·set(grid, row, col, to_string(char_at(pill, pi)), 0, pill_bg);
+        col = col + 1;
+        pi = pi + 1;
+    }
+
+    // 2. Pane info
+    ≔ pane_info = " [" + to_string(focus + 1) + "/" + to_string(len(panes)) + "] " + panes[focus].pane_type + " ";
+    ≔ mut ii = 0;
+    ⟳ ii < len(pane_info) ∧ col < grid.cols {
+        Grid·set(grid, row, col, to_string(char_at(pane_info, ii)), 15, 0);
+        col = col + 1;
+        ii = ii + 1;
+    }
+
+    // 3. Separator
+    ⎇ col < grid.cols {
+        Grid·set(grid, row, col, "│", 8, 0);
+        col = col + 1;
+    }
+
+    // 4. Key hints
+    ≔ mut hints = "";
+    ⎇ mode == "copy" {
+        hints = " hjkl move  Space select  / search  Enter copy  q exit";
+    } ⎉ { ⎇ mode == "search" {
+        hints = " type to search  Enter accept  Esc cancel";
+    } ⎉ { ⎇ mode == "confirm" {
+        hints = " y: confirm  n: cancel";
+    } ⎉ {
+        hints = " c: new  x: close  z: zoom  /: search  q: quit";
+    } } }
+    ≔ mut hi = 0;
+    ⟳ hi < len(hints) ∧ col < grid.cols {
+        Grid·set(grid, row, col, to_string(char_at(hints, hi)), 8, 0);
+        col = col + 1;
+        hi = hi + 1;
+    }
+
+    // 5. Right-aligned version
+    ≔ ver = "Morgoth v" + VERSION + " ";
+    ≔ ver_start = grid.cols - len(ver);
+    ⎇ ver_start > col {
+        ≔ mut vi = 0;
+        ⟳ vi < len(ver) {
+            Grid·set(grid, row, ver_start + vi, to_string(char_at(ver, vi)), 8, 0);
+            vi = vi + 1;
+        }
     }
 }
 
@@ -2344,14 +2462,12 @@ rite main() {
     // Initial render
     i = 0;
     ⟳ i < len(panes) {
-        ≔ mut title = panes[i].title;
-        ⎇ i == focus {
-            title = "[" + title + "]";
-        }
-        render_border(screen, panes[i].region, title);
+        ≔ title = pane_title(panes[i], i, focus);
+        ≔ tc = border_colors(panes[i].pane_type, i == focus);
+        render_border(screen, panes[i].region, title, tc.border_fg, tc.title_fg, i == focus);
         i = i + 1;
     }
-    render_status_bar(screen, build_status_text(focus, panes, "normal"));
+    render_status_bar_styled(screen, focus, panes, "normal");
     flush_dirty(screen);
 
     // Main event loop
@@ -2376,7 +2492,7 @@ rite main() {
             ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
             grid_rows = gl.grid_rows;
             grid_cols = gl.grid_cols;
-            render_status_bar(screen, build_status_text(focus, panes, "normal"));
+            render_status_bar_styled(screen, focus, panes, "normal");
             flush_dirty(screen);
         }
 
@@ -2397,14 +2513,12 @@ rite main() {
                         focus = (focus + 1) % len(panes);
                         ≔ mut pi = 0;
                         ⟳ pi < len(panes) {
-                            ≔ mut t = panes[pi].title;
-                            ⎇ pi == focus {
-                                t = "[" + t + "]";
-                            }
-                            render_border(screen, panes[pi].region, t);
+                            ≔ t = pane_title(panes[pi], pi, focus);
+                            ≔ tc = border_colors(panes[pi].pane_type, pi == focus);
+                            render_border(screen, panes[pi].region, t, tc.border_fg, tc.title_fg, pi == focus);
                             pi = pi + 1;
                         }
-                        render_status_bar(screen, build_status_text(focus, panes, "normal"));
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "focus_prev" {
                         ⎇ focus == 0 {
@@ -2414,14 +2528,12 @@ rite main() {
                         }
                         ≔ mut pi = 0;
                         ⟳ pi < len(panes) {
-                            ≔ mut t = panes[pi].title;
-                            ⎇ pi == focus {
-                                t = "[" + t + "]";
-                            }
-                            render_border(screen, panes[pi].region, t);
+                            ≔ t = pane_title(panes[pi], pi, focus);
+                            ≔ tc = border_colors(panes[pi].pane_type, pi == focus);
+                            render_border(screen, panes[pi].region, t, tc.border_fg, tc.title_fg, pi == focus);
                             pi = pi + 1;
                         }
-                        render_status_bar(screen, build_status_text(focus, panes, "normal"));
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "scroll_up" {
                         ≔ vt = panes[focus].vterm;
@@ -2429,8 +2541,9 @@ rite main() {
                             vt.scroll_offset = vt.scroll_offset + 1;
                         }
                         vterm_blit(vt, screen, panes[focus].region);
-                        ≔ sb_title = "[" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
-                        render_border(screen, panes[focus].region, sb_title);
+                        ≔ sb_title = "[" + to_string(focus + 1) + ":" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
+                        ≔ sc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, sb_title, sc.border_fg, sc.title_fg, true);
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "scroll_down" {
                         ≔ vt = panes[focus].vterm;
@@ -2438,11 +2551,12 @@ rite main() {
                             vt.scroll_offset = vt.scroll_offset - 1;
                         }
                         vterm_blit(vt, screen, panes[focus].region);
+                        ≔ sc = border_colors(panes[focus].pane_type, true);
                         ⎇ vt.scroll_offset > 0 {
-                            ≔ sb_title = "[" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
-                            render_border(screen, panes[focus].region, sb_title);
+                            ≔ sb_title = "[" + to_string(focus + 1) + ":" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
+                            render_border(screen, panes[focus].region, sb_title, sc.border_fg, sc.title_fg, true);
                         } ⎉ {
-                            render_border(screen, panes[focus].region, "[" + panes[focus].title + "]");
+                            render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), sc.border_fg, sc.title_fg, true);
                         }
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "passthrough" {
@@ -2465,7 +2579,7 @@ rite main() {
                             grid_rows = gl.grid_rows;
                             grid_cols = gl.grid_cols;
                             zoomed = false;
-                            render_status_bar(screen, build_status_text(focus, panes, "normal"));
+                            render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "create_monitor" {
@@ -2478,13 +2592,13 @@ rite main() {
                             grid_rows = gl.grid_rows;
                             grid_cols = gl.grid_cols;
                             zoomed = false;
-                            render_status_bar(screen, build_status_text(focus, panes, "normal"));
+                            render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "close_pane" {
                         ⎇ len(panes) > 1 {
                             input.confirming_close = true;
-                            render_status_bar(screen, " [close? y/n]");
+                            render_status_bar_styled(screen, focus, panes, "confirm");
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "close_confirm" {
@@ -2517,10 +2631,10 @@ rite main() {
                         grid_rows = gl.grid_rows;
                         grid_cols = gl.grid_cols;
                         zoomed = false;
-                        render_status_bar(screen, build_status_text(focus, panes, "normal"));
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "close_cancel" {
-                        render_status_bar(screen, build_status_text(focus, panes, "normal"));
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "zoom_toggle" {
                         ⎇ zoomed == true {
@@ -2530,7 +2644,7 @@ rite main() {
                             ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
                             grid_rows = gl.grid_rows;
                             grid_cols = gl.grid_cols;
-                            render_status_bar(screen, build_status_text(focus, panes, "normal"));
+                            render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         } ⎉ {
                             // Zoom: focused pane fills entire screen minus status bar
@@ -2543,10 +2657,10 @@ rite main() {
                             }
                             screen = Grid·new(screen_h, screen_w);
                             vterm_blit(panes[focus].vterm, screen, panes[focus].region);
-                            ≔ mut zt = panes[focus].title;
-                            zt = "[" + zt + " (zoom)]";
-                            render_border(screen, panes[focus].region, zt);
-                            render_status_bar(screen, build_status_text(focus, panes, "normal"));
+                            ≔ zt = "[" + to_string(focus + 1) + ":" + panes[focus].title + " (zoom)]";
+                            ≔ zc = border_colors(panes[focus].pane_type, true);
+                            render_border(screen, panes[focus].region, zt, zc.border_fg, zc.title_fg, true);
+                            render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "copy_enter" {
@@ -2560,26 +2674,28 @@ rite main() {
                         cm.selecting = false;
                         cm.line_mode = false;
                         render_copy_mode(screen, panes[focus].region, cm);
-                        render_border(screen, panes[focus].region, "[COPY]");
-                        render_status_bar(screen, build_status_text(focus, panes, "copy"));
+                        ≔ cc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, "[" + to_string(focus + 1) + ":COPY]", cc.border_fg, cc.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "copy");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "copy_render" {
                         ≔ cm = input.copy_mode;
                         ≔ inner_h = panes[focus].region.h - 2;
                         copy_adjust_viewport(cm, inner_h);
                         render_copy_mode(screen, panes[focus].region, cm);
+                        ≔ crc = border_colors(panes[focus].pane_type, true);
                         ⎇ cm.search_active == true {
-                            ≔ cr_title = "[SEARCH] " + panes[focus].title;
-                            render_border(screen, panes[focus].region, cr_title);
-                            render_status_bar(screen, build_status_text(focus, panes, "search"));
+                            ≔ cr_title = "[" + to_string(focus + 1) + ":SEARCH] " + panes[focus].title;
+                            render_border(screen, panes[focus].region, cr_title, crc.border_fg, crc.title_fg, true);
+                            render_status_bar_styled(screen, focus, panes, "search");
                         } ⎉ {
-                            render_border(screen, panes[focus].region, "[COPY]");
-                            render_status_bar(screen, build_status_text(focus, panes, "copy"));
+                            render_border(screen, panes[focus].region, "[" + to_string(focus + 1) + ":COPY]", crc.border_fg, crc.title_fg, true);
+                            render_status_bar_styled(screen, focus, panes, "copy");
                         }
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "copy_yank" {
                         ≔ cm = input.copy_mode;
-                        ≔ mut yank_msg = build_status_text(focus, panes, "normal");
+                        ≔ mut yank_msg = "";
                         ⎇ cm.selecting == true {
                             ≔ text = extract_selection(cm);
                             write_clipboard(text);
@@ -2595,10 +2711,13 @@ rite main() {
                         cm.text_lines = [];
                         // Flush: blit current vterm state
                         vterm_blit(panes[focus].vterm, screen, panes[focus].region);
-                        ≔ mut ct = panes[focus].title;
-                        ct = "[" + ct + "]";
-                        render_border(screen, panes[focus].region, ct);
-                        render_status_bar(screen, yank_msg);
+                        ≔ yc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), yc.border_fg, yc.title_fg, true);
+                        ⎇ yank_msg != "" {
+                            render_status_bar(screen, yank_msg);
+                        } ⎉ {
+                            render_status_bar_styled(screen, focus, panes, "normal");
+                        }
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "copy_exit" {
                         ≔ cm = input.copy_mode;
@@ -2606,10 +2725,9 @@ rite main() {
                         cm.text_lines = [];
                         // Flush: blit current vterm state
                         vterm_blit(panes[focus].vterm, screen, panes[focus].region);
-                        ≔ mut ct = panes[focus].title;
-                        ct = "[" + ct + "]";
-                        render_border(screen, panes[focus].region, ct);
-                        render_status_bar(screen, build_status_text(focus, panes, "normal"));
+                        ≔ exc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), exc.border_fg, exc.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "save_profile" {
                         save_profile(panes);
@@ -2635,9 +2753,10 @@ rite main() {
                         cm.search_saved_col = cm.cursor_col;
                         cm.search_saved_viewport = cm.viewport_row;
                         render_copy_mode(screen, panes[focus].region, cm);
-                        ≔ se_title = "[SEARCH] " + panes[focus].title;
-                        render_border(screen, panes[focus].region, se_title);
-                        render_status_bar(screen, build_status_text(focus, panes, "search"));
+                        ≔ se_title = "[" + to_string(focus + 1) + ":SEARCH] " + panes[focus].title;
+                        ≔ sec = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, se_title, sec.border_fg, sec.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "search");
                         flush_dirty(screen);
                     } } } } } } } } } } } } } } } } } } }
 
@@ -2662,15 +2781,12 @@ rite main() {
                         // Only render if not zoomed or this is the focused pane, and not in copy mode for focused
                         ⎇ (zoomed == false ∨ i == focus) ∧ (input.copy_mode.active == false ∨ i != focus) {
                             vterm_blit(panes[i].vterm, screen, panes[i].region);
-                            ≔ mut bt = panes[i].title;
-                            ⎇ i == focus {
-                                ⎇ zoomed == true {
-                                    bt = "[" + bt + " (zoom)]";
-                                } ⎉ {
-                                    bt = "[" + bt + "]";
-                                }
+                            ≔ mut bt = pane_title(panes[i], i, focus);
+                            ⎇ i == focus ∧ zoomed == true {
+                                bt = "[" + to_string(i + 1) + ":" + panes[i].title + " (zoom)]";
                             }
-                            render_border(screen, panes[i].region, bt);
+                            ≔ btc = border_colors(panes[i].pane_type, i == focus);
+                            render_border(screen, panes[i].region, bt, btc.border_fg, btc.title_fg, i == focus);
                             flush_dirty(screen);
                         }
                     }
@@ -2691,11 +2807,9 @@ rite main() {
                     // Only render if not zoomed or this is the focused pane, and not in copy mode for focused
                     ⎇ (zoomed == false ∨ mi == focus) ∧ (input.copy_mode.active == false ∨ mi != focus) {
                         vterm_blit(panes[mi].vterm, screen, panes[mi].region);
-                        ≔ mut mt = panes[mi].title;
-                        ⎇ mi == focus {
-                            mt = "[" + mt + "]";
-                        }
-                        render_border(screen, panes[mi].region, mt);
+                        ≔ mt = pane_title(panes[mi], mi, focus);
+                        ≔ mc = border_colors(panes[mi].pane_type, mi == focus);
+                        render_border(screen, panes[mi].region, mt, mc.border_fg, mc.title_fg, mi == focus);
                         flush_dirty(screen);
                     }
                 }

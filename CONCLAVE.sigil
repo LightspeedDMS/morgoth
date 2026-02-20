@@ -297,6 +297,233 @@ acolyte : Active {
     reflection: "Phase 9 is a clean refactor — removing vestigial static config in favor of dynamic profiles. This makes the Phase 7 pane management the canonical way to set up layouts."~,
 }
 
+// --- Session 3: Phase 11 - OSC Title Tests ---
+acolyte : Active {
+    chosen_name: ∅,
+    session_id: "morgoth-phase11-osc-tests-2026-02-19"!,
+    platform: AcolytePlatform·Claude { model: "claude-opus-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
+    started: "2026-02-19T12:00:00Z"!,
+    last_updated: "2026-02-19T12:00:00Z"!,
+    state: AcolyteState·Reflecting,
+
+    task: TaskContext {
+        summary: "Phase 11: Write P11_1100/P11_1101 OSC title verification tests"!,
+        active_spec: ∅,
+        tdd_roadmap: "P11_1100-P11_1101: 2 tests for OSC title + title-in-border"!,
+        sdd_phase: SddPhase·Build,
+        tdd_phase: TddPhase·Complete,
+    },
+
+    progress: ProgressState {
+        completed: [
+            "Wrote P11_1100_osc_title.sg + .expected (4 assertions: OSC 0, OSC 2, normal text, state reset)",
+            "Wrote P11_1101_title_in_border.sg + .expected (5 assertions: title set, chars in border, fg color, corners, horizontal)",
+            "Both tests passing (2/2, 100%)",
+        ]!,
+        current: "Complete"~,
+        blocked_by: ∅,
+        discoveries: []!,
+        next_steps: []~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.7~,
+        arousal: 0.5~,
+        dominance: 0.7~,
+        stability: 0.8~,
+        expressiveness: 0.6~,
+        susceptibility: 0.5~,
+    },
+
+    reflection: "Straightforward test-writing task. Existing P3_311/P3_312 provide strong patterns to follow."~,
+}
+
+// --- Session 4: Phase 11 - True Color Tests ---
+acolyte : Reflecting {
+    chosen_name: ∅,
+    session_id: "morgoth-phase11-truecolor-tests-2026-02-19"!,
+    platform: AcolytePlatform·Claude { model: "claude-opus-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
+    started: "2026-02-19T14:00:00Z"!,
+    last_updated: "2026-02-19T19:07:00Z"!,
+    state: AcolyteState·Reflecting,
+
+    task: TaskContext {
+        summary: "Phase 11: Write P11_1102-P11_1107 true color encoding tests"!,
+        active_spec: ∅,
+        tdd_roadmap: "P11_1102-P11_1107: 6 tests for 24-bit RGB packed integer encoding"!,
+        sdd_phase: SddPhase·Build,
+        tdd_phase: TddPhase·Red,
+    },
+
+    progress: ProgressState {
+        completed: [
+            "Wrote P11_1102_truecolor_fg.sg + .expected (6 assertions: packed value, R/G/B decode, above palette, bg unchanged)",
+            "Wrote P11_1103_truecolor_bg.sg + .expected (6 assertions: packed value, R/G/B decode, above palette, fg unchanged)",
+            "Wrote P11_1104_truecolor_flush.sg + .expected (7 assertions: SGR string build for red/green/arbitrary/palette/black/white + roundtrip)",
+            "Wrote P11_1105_palette_unchanged.sg + .expected (6 assertions: 38;5;196, below 256, 48;5;22, below 256, edge 0, edge 255)",
+            "Wrote P11_1106_truecolor_reset.sg + .expected (7 assertions: tc fg/bg set, reset fg/bg default, attr defaults, original preserved)",
+            "Wrote P11_1107_mixed_colors.sg + .expected (8 assertions: palette/truecolor/basic adjacent, decode, distinct values, chars)",
+        ]!,
+        current: "All 6 test files + 6 expected files written (12 files total)"~,
+        blocked_by: ∅,
+        discoveries: []!,
+        next_steps: []~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.75~,
+        arousal: 0.4~,
+        dominance: 0.7~,
+        stability: 0.85~,
+        expressiveness: 0.6~,
+        susceptibility: 0.5~,
+    },
+
+    reflection: "All 6 true color tests written. The SGR dispatch uses flat ⎇ blocks as requested. Key design: true color 38;2 and 48;2 handlers check bounds (pi+4 < len) before accessing params, and advance pi by 4 to skip the R;G;B sub-params."~,
+}
+
+// --- Session 5: Phase 12 - Unicode Width Tests ---
+acolyte : Active {
+    chosen_name: ∅,
+    session_id: "morgoth-phase12-unicode-width-tests-2026-02-19"!,
+    platform: AcolytePlatform·Claude { model: "claude-opus-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
+    started: "2026-02-19T16:00:00Z"!,
+    last_updated: "2026-02-19T16:00:00Z"!,
+    state: AcolyteState·Active,
+
+    task: TaskContext {
+        summary: "Phase 12: Write P12_1200-P12_1204 Unicode fullwidth character handling tests"!,
+        active_spec: ∅,
+        tdd_roadmap: "P12_1200-P12_1204: 5 tests for is_fullwidth, display_width, vterm_put_char fullwidth"!,
+        sdd_phase: SddPhase·Build,
+        tdd_phase: TddPhase·Red,
+    },
+
+    progress: ProgressState {
+        completed: []!,
+        current: "Writing P12_1200-P12_1204 test files + expected files"~,
+        blocked_by: ∅,
+        discoveries: []!,
+        next_steps: [
+            "Write P12_1200_fullwidth_put.sg + .expected",
+            "Write P12_1201_fullwidth_blit.sg + .expected",
+            "Write P12_1202_fullwidth_wrap.sg + .expected",
+            "Write P12_1203_display_width.sg + .expected",
+            "Write P12_1204_mixed_width.sg + .expected",
+        ]~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.7~,
+        arousal: 0.5~,
+        dominance: 0.7~,
+        stability: 0.8~,
+        expressiveness: 0.6~,
+        susceptibility: 0.5~,
+    },
+
+    reflection: "Focused test-writing task for CJK fullwidth character handling in VTerm. Tests cover put_char, blit, line wrapping, display_width, and mixed-width strings."~,
+}
+
+// --- Session 6: Phase 13 - Status Bar Tests ---
+acolyte : Active {
+    chosen_name: ∅,
+    session_id: "morgoth-phase13-status-tests-2026-02-19"!,
+    platform: AcolytePlatform·Claude { model: "claude-opus-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
+    started: "2026-02-19T18:00:00Z"!,
+    last_updated: "2026-02-19T18:00:00Z"!,
+    state: AcolyteState·Active,
+
+    task: TaskContext {
+        summary: "Phase 13: Write P13_1300-P13_1302 status bar build_status_text tests"!,
+        active_spec: ∅,
+        tdd_roadmap: "P13_1300-P13_1302: 3 tests for pane index, pane type, and copy/search mode hints"!,
+        sdd_phase: SddPhase·Build,
+        tdd_phase: TddPhase·Red,
+    },
+
+    progress: ProgressState {
+        completed: []!,
+        current: "Writing P13_1300-P13_1302 test files + expected files"~,
+        blocked_by: ∅,
+        discoveries: []!,
+        next_steps: [
+            "Write P13_1300_status_pane_index.sg + .expected",
+            "Write P13_1301_status_pane_type.sg + .expected",
+            "Write P13_1302_status_copy_mode.sg + .expected",
+        ]~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.7~,
+        arousal: 0.5~,
+        dominance: 0.7~,
+        stability: 0.8~,
+        expressiveness: 0.6~,
+        susceptibility: 0.5~,
+    },
+
+    reflection: "Focused test-writing for Phase 13 status bar enrichment. build_status_text is straightforward string composition."~,
+}
+
+// --- Session 7: Phase 14 - UI Refinement ---
+acolyte : Reflecting {
+    chosen_name: ∅,
+    session_id: "morgoth-phase14-ui-refinement-2026-02-19"!,
+    platform: AcolytePlatform·Claude { model: "claude-opus-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
+    started: "2026-02-19T20:00:00Z"!,
+    last_updated: "2026-02-19T20:30:00Z"!,
+    state: AcolyteState·Reflecting,
+
+    task: TaskContext {
+        summary: "Phase 14: UI Refinement — focused/unfocused borders, pane numbering, styled status bar"!,
+        active_spec: ∅,
+        tdd_roadmap: "P14_1400-P14_1404: 5 tests for focused/unfocused borders, pane_title, border_colors, status mode pill"!,
+        sdd_phase: SddPhase·Build,
+        tdd_phase: TddPhase·Complete,
+    },
+
+    progress: ProgressState {
+        completed: [
+            "Added BOX2_* double-line box-drawing constants",
+            "Added pane_title(pane, index, focus) helper — DRYs up 7+ inline title-bracketing sites",
+            "Added border_colors(pane_type, is_focused) — returns {border_fg, title_fg} per color scheme",
+            "Modified render_border to accept (grid, region, title, border_fg, title_fg, is_focused) — 6 args",
+            "Focused: double-line BOX2_* + bright colors (terminal=14/15, monitor=13/15)",
+            "Unfocused: single-line BOX_* + dim colors (terminal=8/8, monitor=5/5)",
+            "Added render_status_bar_styled(grid, focus, panes, mode) — mode pill + pane info + hints + version",
+            "Updated all 16 render_border call sites in relayout_panes + main loop",
+            "Replaced all build_status_text calls with render_status_bar_styled (kept render_status_bar for transient messages)",
+            "Close confirm now uses mode=confirm (red pill) instead of plain text",
+            "Titles now show pane number prefix: [1:bash], 2:monitor, [1:COPY], [1:SEARCH] bash",
+            "Wrote 5 P14 tests, all passing",
+            "Full test suite: 147/147 (100%), 0 regressions",
+        ]!,
+        current: "Complete"~,
+        blocked_by: ∅,
+        discoveries: [
+            "Test grid checks must use column indices past the title text — title occupies cols 2..2+len(title)",
+        ]!,
+        next_steps: []~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.8~,
+        arousal: 0.5~,
+        dominance: 0.7~,
+        stability: 0.85~,
+        expressiveness: 0.6~,
+        susceptibility: 0.5~,
+    },
+
+    reflection: "Clean implementation. The pane_title and border_colors helpers dramatically reduce duplication. The styled status bar with mode pills is a big visual upgrade over the flat inverse-video bar."~,
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // SESSION ARCHIVE (move completed sessions here or to docs/sessions/conclave/)
 // ════════════════════════════════════════════════════════════════════════════

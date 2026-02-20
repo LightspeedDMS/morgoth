@@ -1,0 +1,167 @@
+// Test: render_status_bar_styled mode pill renders correct bg color per mode
+// Spec: Phase 14 - UI Refinement
+// Priority: P14
+
+≔ VERSION = "0.1.0";
+
+rite Cell_new(ch, fg, bg, dirty) {
+    ↩ {ch: ch, fg: fg, bg: bg, dirty: dirty}
+}
+
+rite Grid_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, Cell_new(" ", 7, 0, true));
+        i = i + 1;
+    }
+    ↩ {rows: rows, cols: cols, cells: cells}
+}
+
+rite Grid_set(grid, row, col, ch, fg, bg) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        grid.cells[idx] = Cell_new(ch, fg, bg, true);
+    }
+}
+
+rite Grid_get(grid, row, col) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        ↩ grid.cells[idx]
+    }
+    ↩ Cell_new(" ", 7, 0, false)
+}
+
+rite render_status_bar_styled(grid, focus, panes, mode) {
+    ≔ row = grid.rows - 1;
+    ≔ mut col = 0;
+    ⟳ col < grid.cols {
+        Grid_set(grid, row, col, " ", 7, 0);
+        col = col + 1;
+    }
+    col = 0;
+
+    ≔ mut pill = " NORMAL ";
+    ≔ mut pill_bg = 2;
+    ⎇ mode == "copy" {
+        pill = " COPY ";
+        pill_bg = 3;
+    } ⎉ { ⎇ mode == "search" {
+        pill = " SEARCH ";
+        pill_bg = 5;
+    } ⎉ { ⎇ mode == "confirm" {
+        pill = " CONFIRM ";
+        pill_bg = 1;
+    } } }
+    ≔ mut pi = 0;
+    ⟳ pi < len(pill) ∧ col < grid.cols {
+        Grid_set(grid, row, col, to_string(char_at(pill, pi)), 0, pill_bg);
+        col = col + 1;
+        pi = pi + 1;
+    }
+
+    ≔ pane_info = " [" + to_string(focus + 1) + "/" + to_string(len(panes)) + "] " + panes[focus].pane_type + " ";
+    ≔ mut ii = 0;
+    ⟳ ii < len(pane_info) ∧ col < grid.cols {
+        Grid_set(grid, row, col, to_string(char_at(pane_info, ii)), 15, 0);
+        col = col + 1;
+        ii = ii + 1;
+    }
+
+    ⎇ col < grid.cols {
+        Grid_set(grid, row, col, "│", 8, 0);
+        col = col + 1;
+    }
+
+    ≔ mut hints = "";
+    ⎇ mode == "copy" {
+        hints = " hjkl move  Space select  / search  Enter copy  q exit";
+    } ⎉ { ⎇ mode == "search" {
+        hints = " type to search  Enter accept  Esc cancel";
+    } ⎉ { ⎇ mode == "confirm" {
+        hints = " y: confirm  n: cancel";
+    } ⎉ {
+        hints = " c: new  x: close  z: zoom  /: search  q: quit";
+    } } }
+    ≔ mut hi = 0;
+    ⟳ hi < len(hints) ∧ col < grid.cols {
+        Grid_set(grid, row, col, to_string(char_at(hints, hi)), 8, 0);
+        col = col + 1;
+        hi = hi + 1;
+    }
+
+    ≔ ver = "Morgoth v" + VERSION + " ";
+    ≔ ver_start = grid.cols - len(ver);
+    ⎇ ver_start > col {
+        ≔ mut vi = 0;
+        ⟳ vi < len(ver) {
+            Grid_set(grid, row, ver_start + vi, to_string(char_at(ver, vi)), 8, 0);
+            vi = vi + 1;
+        }
+    }
+}
+
+rite main() {
+    ≔ panes = [{ pane_type: "terminal" }, { pane_type: "monitor" }];
+
+    // Test 1: NORMAL mode pill has green bg (2)
+    ≔ g1 = Grid_new(2, 100);
+    render_status_bar_styled(g1, 0, panes, "normal");
+    ≔ c1 = Grid_get(g1, 1, 1);
+    ⎇ c1.bg == 2 ∧ c1.fg == 0 {
+        println("normal_pill_bg: OK");
+    } ⎉ {
+        println("normal_pill_bg: FAILED bg=" + to_string(c1.bg) + " fg=" + to_string(c1.fg));
+    }
+
+    // Test 2: COPY mode pill has yellow bg (3)
+    ≔ g2 = Grid_new(2, 100);
+    render_status_bar_styled(g2, 0, panes, "copy");
+    ≔ c2 = Grid_get(g2, 1, 1);
+    ⎇ c2.bg == 3 ∧ c2.fg == 0 {
+        println("copy_pill_bg: OK");
+    } ⎉ {
+        println("copy_pill_bg: FAILED bg=" + to_string(c2.bg) + " fg=" + to_string(c2.fg));
+    }
+
+    // Test 3: SEARCH mode pill has magenta bg (5)
+    ≔ g3 = Grid_new(2, 100);
+    render_status_bar_styled(g3, 0, panes, "search");
+    ≔ c3 = Grid_get(g3, 1, 1);
+    ⎇ c3.bg == 5 ∧ c3.fg == 0 {
+        println("search_pill_bg: OK");
+    } ⎉ {
+        println("search_pill_bg: FAILED bg=" + to_string(c3.bg) + " fg=" + to_string(c3.fg));
+    }
+
+    // Test 4: CONFIRM mode pill has red bg (1)
+    ≔ g4 = Grid_new(2, 100);
+    render_status_bar_styled(g4, 0, panes, "confirm");
+    ≔ c4 = Grid_get(g4, 1, 1);
+    ⎇ c4.bg == 1 ∧ c4.fg == 0 {
+        println("confirm_pill_bg: OK");
+    } ⎉ {
+        println("confirm_pill_bg: FAILED bg=" + to_string(c4.bg) + " fg=" + to_string(c4.fg));
+    }
+
+    // Test 5: Pane info section has bright white fg (15)
+    // " NORMAL " is 9 chars, then pane info starts
+    ≔ info_cell = Grid_get(g1, 1, 9);
+    ⎇ info_cell.fg == 15 ∧ info_cell.bg == 0 {
+        println("pane_info_fg: OK");
+    } ⎉ {
+        println("pane_info_fg: FAILED fg=" + to_string(info_cell.fg) + " bg=" + to_string(info_cell.bg));
+    }
+
+    // Test 6: Pill text reads correctly
+    ≔ n0 = Grid_get(g1, 1, 1);
+    ≔ n1 = Grid_get(g1, 1, 2);
+    ≔ n2 = Grid_get(g1, 1, 3);
+    ⎇ n0.ch == "N" ∧ n1.ch == "O" ∧ n2.ch == "R" {
+        println("pill_text_normal: OK");
+    } ⎉ {
+        println("pill_text_normal: FAILED ch=" + n0.ch + n1.ch + n2.ch);
+    }
+}
