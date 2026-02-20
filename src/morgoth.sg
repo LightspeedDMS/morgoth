@@ -3015,25 +3015,30 @@ rite main() {
         ⎇ sess_data != null {
             render_status_bar(screen, " Restore last session? [y/N]  (3s)");
             flush_dirty(screen);
-            // Block up to 3s for user response, then auto-decline
+            // Read one response byte; empty string if timeout
+            ≔ mut resp = "";
             ⎇ Sys·poll_fd(0, 3000) == true {
-                ≔ resp = Sys·read_string(0, 1);
-                ⎇ resp == "y" ∨ resp == "Y" {
-                    ≔ mut ri = 0;
-                    ⟳ ri < len(panes) ∧ ri < len(sess_data) {
-                        ≔ saved = sess_data[ri];
-                        ≔ saved_sb = map_get(saved, "scrollback");
-                        ⎇ saved_sb != null ∧ len(saved_sb) > 0 {
-                            vterm_restore_scrollback(panes[ri].vterm, saved_sb);
-                        }
-                        ri = ri + 1;
+                resp = Sys·read_string(0, 1);
+            }
+            // Drain stdin: discard any bytes that arrived alongside or after
+            // the response (e.g. CR, terminal escape replies, pipe injection).
+            // Without this, residual bytes are forwarded to the focused pane
+            // as passthrough on the first main-loop iteration.
+            ⟳ Sys·poll_fd(0, 0) == true {
+                Sys·read_string(0, 256);
+            }
+            ⎇ resp == "y" ∨ resp == "Y" {
+                ≔ mut ri = 0;
+                ⟳ ri < len(panes) ∧ ri < len(sess_data) {
+                    ≔ saved = sess_data[ri];
+                    ≔ saved_sb = map_get(saved, "scrollback");
+                    ⎇ saved_sb != null ∧ len(saved_sb) > 0 {
+                        vterm_restore_scrollback(panes[ri].vterm, saved_sb);
                     }
-                    render_status_bar(screen, " Session restored.");
-                    flush_dirty(screen);
-                } ⎉ {
-                    render_status_bar_styled(screen, focus, panes, "normal");
-                    flush_dirty(screen);
+                    ri = ri + 1;
                 }
+                render_status_bar(screen, " Session restored.");
+                flush_dirty(screen);
             } ⎉ {
                 render_status_bar_styled(screen, focus, panes, "normal");
                 flush_dirty(screen);
