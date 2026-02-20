@@ -1,0 +1,5 @@
+session_file_exists: OK
+session_file_nonempty: OK
+session_pane_count: OK
+pane0_type: OK
+pane1_type: OK

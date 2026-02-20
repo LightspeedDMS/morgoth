@@ -1130,7 +1130,8 @@ rite load_config() {
         scrollback_lines: 1000,
         leader_key: 2,
         hmr: false,
-        max_panes: 12
+        max_panes: 12,
+        session_restore: true
     };
 
     ⎇ fs_exists(config_path) == true {
@@ -1150,6 +1151,8 @@ rite load_config() {
             ⎇ j_hmr != null { cfg.hmr = j_hmr; }
             ≔ j_max = map_get(j, "max_panes");
             ⎇ j_max != null { cfg.max_panes = j_max; }
+            ≔ j_session_restore = map_get(j, "session_restore");
+            ⎇ j_session_restore != null { cfg.session_restore = j_session_restore; }
         }
     }
 
@@ -1211,6 +1214,103 @@ rite save_profile(panes) {
     ≔ profile = { panes: types };
     ≔ json = json_stringify(profile);
     fs_write(dir_path + "/default.json", json);
+}
+
+// ============================================================================
+// Section 2b: Session Persistence (Phase 18)
+// ============================================================================
+
+// Extract scrollback buffer as plain text lines (scrollback rows only, not visible area)
+rite extract_scrollback_text(vt) {
+    ≔ mut lines = [];
+    ≔ mut si = 0;
+    ⟳ si < len(vt.scrollback) {
+        ≔ mut line = "";
+        ≔ mut ci = 0;
+        ⟳ ci < len(vt.scrollback[si]) {
+            ⎇ vt.scrollback[si][ci].ch != "" {
+                line = line + vt.scrollback[si][ci].ch;
+            }
+            ci = ci + 1;
+        }
+        push(lines, line);
+        si = si + 1;
+    }
+    ↩ lines
+}
+
+// Save session to ~/.morgoth/session.json: pane types + scrollback text
+rite save_session(panes) {
+    ≔ home = env("HOME");
+    ≔ dir_path = home + "/.morgoth";
+    ⎇ fs_exists(dir_path) == false {
+        fs_mkdir(dir_path);
+    }
+    ≔ mut sess_panes = [];
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ≔ mut sb_lines = [];
+        ⎇ panes[i].pane_type == "terminal" {
+            sb_lines = extract_scrollback_text(panes[i].vterm);
+        }
+        push(sess_panes, {pane_type: panes[i].pane_type, scrollback: sb_lines});
+        i = i + 1;
+    }
+    ≔ session = {panes: sess_panes};
+    ≔ json = json_stringify(session);
+    fs_write(dir_path + "/session.json", json);
+}
+
+// Load session from ~/.morgoth/session.json
+// Returns array of {pane_type, scrollback} maps, or null if no session file
+rite load_session() {
+    ≔ home = env("HOME");
+    ≔ session_path = home + "/.morgoth/session.json";
+    ⎇ fs_exists(session_path) == false {
+        ↩ null
+    }
+    ≔ raw = fs_read(session_path);
+    ⎇ len(raw) == 0 ∨ starts_with(raw, "{") == false {
+        ↩ null
+    }
+    ≔ j = json_parse(raw);
+    ≔ sess_panes = map_get(j, "panes");
+    ⎇ sess_panes == null {
+        ↩ null
+    }
+    ↩ sess_panes
+}
+
+// Restore scrollback into a VTerm from saved text lines
+// lines: array of strings, one per scrollback row
+rite vterm_restore_scrollback(vt, lines) {
+    ≔ mut si = 0;
+    ⟳ si < len(lines) {
+        ≔ line = lines[si];
+        ≔ mut cells = [];
+        ≔ mut ci = 0;
+        ⟳ ci < len(line) {
+            ≔ ch = to_string(char_at(line, ci));
+            push(cells, {ch: ch, fg: 7, bg: 0, dirty: false});
+            ci = ci + 1;
+        }
+        // Pad row to terminal width
+        ⟳ len(cells) < vt.cols {
+            push(cells, {ch: " ", fg: 7, bg: 0, dirty: false});
+        }
+        push(vt.scrollback, cells);
+        // Trim scrollback to max
+        ⟳ len(vt.scrollback) > vt.scrollback_max {
+            ≔ mut trimmed = [];
+            ≔ mut ti = 1;
+            ⟳ ti < len(vt.scrollback) {
+                push(trimmed, vt.scrollback[ti]);
+                ti = ti + 1;
+            }
+            vt.scrollback = trimmed;
+        }
+        si = si + 1;
+    }
 }
 
 // ============================================================================
@@ -2622,6 +2722,38 @@ rite main() {
     render_status_bar_styled(screen, focus, panes, "normal");
     flush_dirty(screen);
 
+    // Session restore prompt (Phase 18)
+    ⎇ cfg.session_restore == true {
+        ≔ sess_data = load_session();
+        ⎇ sess_data != null {
+            render_status_bar(screen, " Restore last session? [y/N]");
+            flush_dirty(screen);
+            // Non-blocking check — restore if user already typed 'y'
+            ⎇ Sys·poll_fd(0, 0) == true {
+                ≔ resp = Sys·read_string(0, 1);
+                ⎇ resp == "y" ∨ resp == "Y" {
+                    ≔ mut ri = 0;
+                    ⟳ ri < len(panes) ∧ ri < len(sess_data) {
+                        ≔ saved = sess_data[ri];
+                        ≔ saved_sb = map_get(saved, "scrollback");
+                        ⎇ saved_sb != null ∧ len(saved_sb) > 0 {
+                            vterm_restore_scrollback(panes[ri].vterm, saved_sb);
+                        }
+                        ri = ri + 1;
+                    }
+                    render_status_bar(screen, " Session restored.");
+                    flush_dirty(screen);
+                } ⎉ {
+                    render_status_bar_styled(screen, focus, panes, "normal");
+                    flush_dirty(screen);
+                }
+            } ⎉ {
+                render_status_bar_styled(screen, focus, panes, "normal");
+                flush_dirty(screen);
+            }
+        }
+    }
+
     // Main event loop
     ≔ mut had_activity_prev = false;
     ⟳ running == true {
@@ -2687,6 +2819,9 @@ rite main() {
                         render_status_bar(screen, " Quit Morgoth? y/n");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "quit_confirm" {
+                        ⎇ cfg.session_restore == true {
+                            save_session(panes);
+                        }
                         running = false;
                     } ⎉ { ⎇ action == "quit_cancel" {
                         render_status_bar_styled(screen, focus, panes, "normal");

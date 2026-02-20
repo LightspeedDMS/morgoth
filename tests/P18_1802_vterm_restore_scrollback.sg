@@ -1,0 +1,101 @@
+// Test: vterm_restore_scrollback populates VTerm scrollback from text lines
+// Spec: Phase 18 - Session Persistence
+// Priority: P18
+
+rite Cell_new(ch, fg, bg) {
+    ↩ {ch: ch, fg: fg, bg: bg, dirty: false}
+}
+
+rite VTerm_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, Cell_new(" ", 7, 0));
+        i = i + 1;
+    }
+    ↩ {
+        rows: rows, cols: cols, cells: cells,
+        scrollback: [], scrollback_max: 100,
+        cursor_row: 0, cursor_col: 0,
+        fg: 7, bg: 0,
+        in_alt_screen: false,
+        title: "",
+        scroll_offset: 0
+    }
+}
+
+rite vterm_restore_scrollback(vt, lines) {
+    ≔ mut si = 0;
+    ⟳ si < len(lines) {
+        ≔ line = lines[si];
+        ≔ mut cells = [];
+        ≔ mut ci = 0;
+        ⟳ ci < len(line) {
+            ≔ ch = to_string(char_at(line, ci));
+            push(cells, {ch: ch, fg: 7, bg: 0, dirty: false});
+            ci = ci + 1;
+        }
+        // Pad row to terminal width
+        ⟳ len(cells) < vt.cols {
+            push(cells, {ch: " ", fg: 7, bg: 0, dirty: false});
+        }
+        push(vt.scrollback, cells);
+        ⟳ len(vt.scrollback) > vt.scrollback_max {
+            ≔ mut trimmed = [];
+            ≔ mut ti = 1;
+            ⟳ ti < len(vt.scrollback) {
+                push(trimmed, vt.scrollback[ti]);
+                ti = ti + 1;
+            }
+            vt.scrollback = trimmed;
+        }
+        si = si + 1;
+    }
+}
+
+rite main() {
+    ≔ vt = VTerm_new(10, 20);
+
+    // Initially empty scrollback
+    ⎇ len(vt.scrollback) == 0 {
+        println("initial_empty: OK");
+    } ⎉ {
+        println("initial_empty: FAILED");
+    }
+
+    // Restore 2 lines
+    ≔ mut lines = [];
+    push(lines, "hello world");
+    push(lines, "second line");
+    vterm_restore_scrollback(vt, lines);
+
+    ⎇ len(vt.scrollback) == 2 {
+        println("scrollback_count: OK");
+    } ⎉ {
+        println("scrollback_count: FAILED got=" + to_string(len(vt.scrollback)));
+    }
+
+    // Each scrollback row is padded to vt.cols (20)
+    ⎇ len(vt.scrollback[0]) == 20 {
+        println("row_padded_to_cols: OK");
+    } ⎉ {
+        println("row_padded_to_cols: FAILED len=" + to_string(len(vt.scrollback[0])));
+    }
+
+    // First chars match original line
+    ≔ ch0 = vt.scrollback[0][0].ch;
+    ⎇ ch0 == "h" {
+        println("first_char: OK");
+    } ⎉ {
+        println("first_char: FAILED got=" + ch0);
+    }
+
+    // Padding cells are spaces
+    ≔ pad_ch = vt.scrollback[0][19].ch;
+    ⎇ pad_ch == " " {
+        println("pad_space: OK");
+    } ⎉ {
+        println("pad_space: FAILED got=" + pad_ch);
+    }
+}

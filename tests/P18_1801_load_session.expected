@@ -1,0 +1,6 @@
+load_null_when_missing: OK
+load_not_null: OK
+load_pane_count: OK
+load_pane0_type: OK
+load_scrollback_count: OK
+load_scrollback_line0: OK

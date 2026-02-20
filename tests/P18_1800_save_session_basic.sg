@@ -1,0 +1,131 @@
+// Test: save_session creates session.json with pane type info
+// Spec: Phase 18 - Session Persistence
+// Priority: P18
+
+≔ HOME_DIR = env("HOME");
+≔ SESSION_PATH = HOME_DIR + "/.morgoth/session.json";
+
+rite Cell_new(ch, fg, bg) {
+    ↩ {ch: ch, fg: fg, bg: bg, dirty: false}
+}
+
+rite VTerm_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, Cell_new(" ", 7, 0));
+        i = i + 1;
+    }
+    ↩ {
+        rows: rows, cols: cols, cells: cells,
+        scrollback: [], scrollback_max: 100,
+        cursor_row: 0, cursor_col: 0,
+        fg: 7, bg: 0,
+        in_alt_screen: false,
+        title: "",
+        scroll_offset: 0
+    }
+}
+
+rite Pane_new(id, pane_type, rows, cols) {
+    ↩ {
+        id: id,
+        pane_type: pane_type,
+        vterm: VTerm_new(rows, cols),
+        master_fd: -1,
+        alive: true,
+        title: pane_type,
+        region: {row: 0, col: 0, h: rows, w: cols}
+    }
+}
+
+// Minimal extract_scrollback_text for test
+rite extract_scrollback_text(vt) {
+    ≔ mut lines = [];
+    ≔ mut si = 0;
+    ⟳ si < len(vt.scrollback) {
+        ≔ mut line = "";
+        ≔ mut ci = 0;
+        ⟳ ci < len(vt.scrollback[si]) {
+            ⎇ vt.scrollback[si][ci].ch != "" {
+                line = line + vt.scrollback[si][ci].ch;
+            }
+            ci = ci + 1;
+        }
+        push(lines, line);
+        si = si + 1;
+    }
+    ↩ lines
+}
+
+rite save_session(panes) {
+    ≔ home = env("HOME");
+    ≔ dir_path = home + "/.morgoth";
+    ⎇ fs_exists(dir_path) == false {
+        fs_mkdir(dir_path);
+    }
+    ≔ mut sess_panes = [];
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ≔ mut sb_lines = [];
+        ⎇ panes[i].pane_type == "terminal" {
+            sb_lines = extract_scrollback_text(panes[i].vterm);
+        }
+        push(sess_panes, {pane_type: panes[i].pane_type, scrollback: sb_lines});
+        i = i + 1;
+    }
+    ≔ session = {panes: sess_panes};
+    ≔ json = json_stringify(session);
+    fs_write(dir_path + "/session.json", json);
+}
+
+rite main() {
+    // Create two panes: terminal + monitor
+    ≔ mut panes = [];
+    push(panes, Pane_new(0, "terminal", 10, 40));
+    push(panes, Pane_new(1, "monitor", 10, 40));
+
+    // Save session
+    save_session(panes);
+
+    // Verify file exists
+    ⎇ fs_exists(SESSION_PATH) == true {
+        println("session_file_exists: OK");
+    } ⎉ {
+        println("session_file_exists: FAILED");
+    }
+
+    // Read and parse
+    ≔ raw = fs_read(SESSION_PATH);
+    ⎇ len(raw) > 0 ∧ starts_with(raw, "{") == true {
+        println("session_file_nonempty: OK");
+    } ⎉ {
+        println("session_file_nonempty: FAILED");
+    }
+
+    ≔ j = json_parse(raw);
+    ≔ panes_j = map_get(j, "panes");
+    ⎇ panes_j != null ∧ len(panes_j) == 2 {
+        println("session_pane_count: OK");
+    } ⎉ {
+        println("session_pane_count: FAILED got=" + to_string(len(panes_j)));
+    }
+
+    // Verify pane types
+    ≔ p0 = panes_j[0];
+    ≔ p0_type = map_get(p0, "pane_type");
+    ⎇ p0_type == "terminal" {
+        println("pane0_type: OK");
+    } ⎉ {
+        println("pane0_type: FAILED got=" + to_string(p0_type));
+    }
+
+    ≔ p1 = panes_j[1];
+    ≔ p1_type = map_get(p1, "pane_type");
+    ⎇ p1_type == "monitor" {
+        println("pane1_type: OK");
+    } ⎉ {
+        println("pane1_type: FAILED got=" + to_string(p1_type));
+    }
+}
