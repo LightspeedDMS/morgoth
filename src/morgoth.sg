@@ -1135,9 +1135,10 @@ rite load_config() {
     };
 
     // Use $SHELL env var as default (overridden by config.json if set)
+    // Concatenate with "" to coerce evidential → plain string before fs_exists
     ≔ env_shell = env("SHELL");
-    ⎇ env_shell != "" {
-        cfg.shell = env_shell;
+    ⎇ env_shell != null {
+        cfg.shell = "" + env_shell;
     }
 
     ⎇ fs_exists(config_path) == true {
