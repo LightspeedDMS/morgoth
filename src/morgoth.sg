@@ -2,6 +2,10 @@
 // Morgoth — Terminal Multiplexer for Claude Code
 // Written in Sigil
 //
+// Copyright 2026 Daemoniorum, LLC
+// Licensed under Apache License 2.0 or MIT License, at your option.
+// See LICENSE-APACHE and LICENSE-MIT at the repository root.
+//
 // Phase 1: Core Implementation
 // - Single and multi-pane terminal with PTY management
 // - Grid-based layout engine

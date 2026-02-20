@@ -197,4 +197,11 @@ appears in Claude's input box ready to edit and submit.
 
 ## License
 
-Proprietary — Daemoniorum LLC
+Licensed under either of
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
+
+at your option.
+
+Copyright 2026 Daemoniorum, LLC
