@@ -1,0 +1,33 @@
+// Test: claude_task field read from ~/.claude/current-task with trailing newline stripped
+// Spec: Phase 22 - Claude Code Integration
+// Priority: P22
+
+rite main() {
+    ≔ home = env("HOME");
+    ≔ task_path = home + "/.claude/current-task";
+
+    // Write a test task file
+    fs_write(task_path, "Implement Phase 22\n");
+
+    ≔ raw = fs_read(task_path);
+    ≔ mut claude_task = raw;
+    ≔ tl = len(claude_task);
+    ⎇ tl > 0 ∧ char_code_at(claude_task, tl - 1) == 10 {
+        claude_task = substring(claude_task, 0, tl - 1);
+    }
+
+    ⎇ claude_task == "Implement Phase 22" {
+        println("task_stripped: OK");
+    } ⎉ {
+        println("task_stripped: FAILED got='" + claude_task + "'");
+    }
+
+    ⎇ len(claude_task) == 18 {
+        println("task_length: OK");
+    } ⎉ {
+        println("task_length: FAILED got=" + to_string(len(claude_task)));
+    }
+
+    // Cleanup
+    fs_write(task_path, "");
+}

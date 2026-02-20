@@ -1,0 +1,4 @@
+shell_env_type: OK
+validate_existing: OK
+validate_fallback: OK
+shell_preference_set: OK

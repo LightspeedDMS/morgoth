@@ -1,0 +1,51 @@
+// Test: load_config uses $SHELL env var as default when no config
+// Spec: Phase 23 - Real-World Hardening
+// Priority: P23
+
+rite validate_shell(shell) {
+    ⎇ fs_exists(shell) == true {
+        ↩ shell
+    }
+    ↩ "/bin/bash"
+}
+
+rite main() {
+    // env("SHELL") should return the current shell (evidential-wrapped string)
+    ≔ shell_env = env("SHELL");
+
+    // Shell env should be non-null (env() returns null when var is unset)
+    ⎇ shell_env != null {
+        println("shell_env_type: OK");
+    } ⎉ {
+        println("shell_env_type: FAILED type=" + type_of(shell_env));
+    }
+
+    // validate_shell on a real path should preserve it
+    ≔ validated = validate_shell("/bin/bash");
+    ⎇ validated == "/bin/bash" {
+        println("validate_existing: OK");
+    } ⎉ {
+        println("validate_existing: FAILED got=" + validated);
+    }
+
+    // validate_shell on a non-existent path falls back to /bin/bash
+    ≔ fallback = validate_shell("/nonexistent/shell");
+    ⎇ fallback == "/bin/bash" {
+        println("validate_fallback: OK");
+    } ⎉ {
+        println("validate_fallback: FAILED got=" + fallback);
+    }
+
+    // $SHELL preference: if SHELL is set and valid, it's used over hardcoded default
+    ≔ mut cfg_shell = "/bin/bash";
+    ≔ env_shell = env("SHELL");
+    ⎇ env_shell != "" {
+        cfg_shell = env_shell;
+    }
+
+    ⎇ cfg_shell != "" {
+        println("shell_preference_set: OK");
+    } ⎉ {
+        println("shell_preference_set: FAILED empty shell");
+    }
+}

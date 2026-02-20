@@ -17,6 +17,11 @@ if [ ! -f "$MORGOTH_SRC" ]; then
     exit 1
 fi
 
+# Environment for child shells
+export MORGOTH=1
+export TERM=xterm-256color
+export COLORTERM=truecolor
+
 # Save terminal state
 saved=$(stty -g)
 

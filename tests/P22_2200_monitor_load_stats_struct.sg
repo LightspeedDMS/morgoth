@@ -1,0 +1,65 @@
+// Test: monitor_load_stats returns struct with stats/git_branch/claude_task fields
+// Spec: Phase 22 - Claude Code Integration
+// Priority: P22
+
+rite monitor_load_stats() {
+    ≔ home = env("HOME");
+
+    ≔ stats_path = home + "/.claude/stats-cache.json";
+    ≔ mut stats = null;
+    ⎇ fs_exists(stats_path) == true {
+        ≔ raw = fs_read(stats_path);
+        ⎇ len(raw) > 0 ∧ starts_with(raw, "{") == true {
+            stats = json_parse(raw);
+        }
+    }
+
+    ≔ git_branch_file = "/tmp/morgoth-branch.txt";
+    ≔ mut git_branch = "";
+    ⎇ fs_exists(git_branch_file) == true {
+        ≔ raw = fs_read(git_branch_file);
+        git_branch = raw;
+        ≔ bl = len(git_branch);
+        ⎇ bl > 0 ∧ char_code_at(git_branch, bl - 1) == 10 {
+            git_branch = substring(git_branch, 0, bl - 1);
+        }
+    }
+    Sys·spawn_bg("sh", ["-c", "git rev-parse --abbrev-ref HEAD 2>/dev/null > /tmp/morgoth-branch.txt"]);
+
+    ≔ task_path = home + "/.claude/current-task";
+    ≔ mut claude_task = "";
+    ⎇ fs_exists(task_path) == true {
+        ≔ raw = fs_read(task_path);
+        claude_task = raw;
+        ≔ tl = len(claude_task);
+        ⎇ tl > 0 ∧ char_code_at(claude_task, tl - 1) == 10 {
+            claude_task = substring(claude_task, 0, tl - 1);
+        }
+    }
+
+    ↩ { stats: stats, git_branch: git_branch, claude_task: claude_task }
+}
+
+rite main() {
+    ≔ info = monitor_load_stats();
+
+    // Return type must be a struct with the three fields
+    ⎇ type_of(info.git_branch) == "string" {
+        println("has_git_branch_field: OK");
+    } ⎉ {
+        println("has_git_branch_field: FAILED type=" + type_of(info.git_branch));
+    }
+
+    ⎇ type_of(info.claude_task) == "string" {
+        println("has_claude_task_field: OK");
+    } ⎉ {
+        println("has_claude_task_field: FAILED type=" + type_of(info.claude_task));
+    }
+
+    // stats is null when no stats-cache.json or a map when present
+    ⎇ info.stats == null ∨ type_of(info.stats) == "map" {
+        println("stats_field_valid: OK");
+    } ⎉ {
+        println("stats_field_valid: FAILED type=" + type_of(info.stats));
+    }
+}

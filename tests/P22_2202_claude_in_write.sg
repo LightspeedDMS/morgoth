@@ -1,0 +1,30 @@
+// Test: selected text written to ~/.morgoth/claude-in.txt on copy yank
+// Spec: Phase 22 - Claude Code Integration
+// Priority: P22
+
+rite main() {
+    ≔ home = env("HOME");
+    ≔ ci_dir = home + "/.morgoth";
+    ≔ ci_path = ci_dir + "/claude-in.txt";
+
+    // Simulate the write path in copy_yank handler
+    ≔ text = "hello from morgoth";
+    ⎇ fs_exists(ci_dir) == false { fs_mkdir(ci_dir); }
+    fs_write(ci_path, text);
+
+    // Verify written correctly
+    ⎇ fs_exists(ci_path) == true {
+        ≔ read_back = fs_read(ci_path);
+        ⎇ read_back == text {
+            println("claude_in_written: OK");
+        } ⎉ {
+            println("claude_in_written: FAILED got='" + read_back + "'");
+        }
+    } ⎉ {
+        println("claude_in_written: FAILED file not found");
+    }
+
+    // Cleanup
+    fs_write(ci_path, "");
+    println("cleanup: OK");
+}

@@ -1,0 +1,3 @@
+has_git_branch_field: OK
+has_claude_task_field: OK
+stats_field_valid: OK

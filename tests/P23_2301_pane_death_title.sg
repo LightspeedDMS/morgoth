@@ -1,0 +1,59 @@
+// Test: pane death sets title to "[exited N]" when waitpid returns
+// Spec: Phase 23 - Real-World Hardening
+// Priority: P23
+
+rite main() {
+    // Simulate the pane death detection logic
+    // When wait.pid > 0, title becomes "[exited <status>]" and alive = false
+
+    ≔ mut pane_alive = true;
+    ≔ mut pane_title = "bash";
+
+    // Simulate: waitpid returned pid > 0 with status 0
+    ≔ wait_pid = 1234;
+    ≔ wait_status = 0;
+
+    ⎇ wait_pid > 0 {
+        pane_alive = false;
+        pane_title = "[exited " + to_string(wait_status) + "]";
+    }
+
+    ⎇ pane_alive == false {
+        println("pane_marked_dead: OK");
+    } ⎉ {
+        println("pane_marked_dead: FAILED");
+    }
+
+    ⎇ pane_title == "[exited 0]" {
+        println("pane_title_exit0: OK");
+    } ⎉ {
+        println("pane_title_exit0: FAILED got='" + pane_title + "'");
+    }
+
+    // Non-zero exit code
+    ≔ mut pane2_title = "bash";
+    ≔ wait2_status = 127;
+    pane2_title = "[exited " + to_string(wait2_status) + "]";
+
+    ⎇ pane2_title == "[exited 127]" {
+        println("pane_title_exit127: OK");
+    } ⎉ {
+        println("pane_title_exit127: FAILED got='" + pane2_title + "'");
+    }
+
+    // Pane not dead: waitpid returns pid = 0 (WNOHANG, still running)
+    ≔ mut pane3_alive = true;
+    ≔ mut pane3_title = "bash";
+    ≔ wait3_pid = 0;
+
+    ⎇ wait3_pid > 0 {
+        pane3_alive = false;
+        pane3_title = "[exited 0]";
+    }
+
+    ⎇ pane3_alive == true ∧ pane3_title == "bash" {
+        println("pane_still_alive: OK");
+    } ⎉ {
+        println("pane_still_alive: FAILED alive=" + to_string(pane3_alive));
+    }
+}

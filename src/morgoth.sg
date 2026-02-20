@@ -1134,6 +1134,12 @@ rite load_config() {
         session_restore: true
     };
 
+    // Use $SHELL env var as default (overridden by config.json if set)
+    ≔ env_shell = env("SHELL");
+    ⎇ env_shell != "" {
+        cfg.shell = env_shell;
+    }
+
     ⎇ fs_exists(config_path) == true {
         ≔ raw = fs_read(config_path);
         // Guard: only parse if non-empty and starts with "{"
@@ -2781,20 +2787,51 @@ rite format_number(n) {
     result
 }
 
-// Load Claude Code stats from ~/.claude/stats-cache.json
+// Load Claude Code stats, git branch, and current task
 rite monitor_load_stats() {
     ≔ home = env("HOME");
+
+    // Claude stats
     ≔ stats_path = home + "/.claude/stats-cache.json";
-    ≔ mut result = null;
+    ≔ mut stats = null;
     ⎇ fs_exists(stats_path) == true {
         ≔ raw = fs_read(stats_path);
-        result = json_parse(raw);
+        ⎇ len(raw) > 0 ∧ starts_with(raw, "{") == true {
+            stats = json_parse(raw);
+        }
     }
-    result
+
+    // Git branch — read last result, then spawn refresh for next iteration
+    ≔ git_branch_file = "/tmp/morgoth-branch.txt";
+    ≔ mut git_branch = "";
+    ⎇ fs_exists(git_branch_file) == true {
+        ≔ raw = fs_read(git_branch_file);
+        git_branch = raw;
+        ≔ bl = len(git_branch);
+        ⎇ bl > 0 ∧ char_code_at(git_branch, bl - 1) == 10 {
+            git_branch = substring(git_branch, 0, bl - 1);
+        }
+    }
+    Sys·spawn_bg("sh", ["-c", "git rev-parse --abbrev-ref HEAD 2>/dev/null > /tmp/morgoth-branch.txt"]);
+
+    // Current Claude task (~/.claude/current-task)
+    ≔ task_path = home + "/.claude/current-task";
+    ≔ mut claude_task = "";
+    ⎇ fs_exists(task_path) == true {
+        ≔ raw = fs_read(task_path);
+        claude_task = raw;
+        ≔ tl = len(claude_task);
+        ⎇ tl > 0 ∧ char_code_at(claude_task, tl - 1) == 10 {
+            claude_task = substring(claude_task, 0, tl - 1);
+        }
+    }
+
+    ↩ { stats: stats, git_branch: git_branch, claude_task: claude_task }
 }
 
 // Render monitor data into a VTerm
-rite monitor_render(vt, stats) {
+// info: { stats, git_branch, claude_task } from monitor_load_stats()
+rite monitor_render(vt, info) {
     // Clear VTerm
     ≔ mut ei = 0;
     ⟳ ei < len(vt.cells) {
@@ -2804,22 +2841,42 @@ rite monitor_render(vt, stats) {
     vt.cursor_row = 0;
     vt.cursor_col = 0;
 
-    ⎇ stats == null {
-        // No data available
-        vterm_feed(vt, " Claude Code Monitor\n");
-        vterm_feed(vt, " No data available\n");
-    } ⎉ {
-        // Header
-        vterm_feed(vt, " Claude Code Monitor\n");
+    // Separator line
+    ≔ mut si = 0;
+    ≔ mut sep = " ";
+    ⟳ si < vt.cols - 2 {
+        sep = sep + BOX_H;
+        si = si + 1;
+    }
 
-        // Separator
-        ≔ mut si = 0;
-        ≔ mut sep = " ";
-        ⟳ si < vt.cols - 2 {
-            sep = sep + BOX_H;
-            si = si + 1;
+    // Header
+    vterm_feed(vt, " Claude Code Monitor\n");
+    vterm_feed(vt, sep + "\n");
+
+    // Git branch
+    ⎇ info.git_branch != "" {
+        vterm_feed(vt, " Branch: " + info.git_branch + "\n");
+    } ⎉ {
+        vterm_feed(vt, " Branch: (none)\n");
+    }
+
+    // Current task
+    ⎇ info.claude_task != "" {
+        // Truncate to fit pane width
+        ≔ max_task = vt.cols - 10;
+        ≔ mut task_str = info.claude_task;
+        ⎇ len(task_str) > max_task {
+            task_str = substring(task_str, 0, max_task) + "…";
         }
-        vterm_feed(vt, sep + "\n");
+        vterm_feed(vt, " Task:   " + task_str + "\n");
+    }
+
+    vterm_feed(vt, "\n");
+
+    ⎇ info.stats == null {
+        vterm_feed(vt, " No claude stats available\n");
+    } ⎉ {
+        ≔ stats = info.stats;
 
         // Total sessions/messages
         ≔ mut sessions_str = "?";
@@ -3346,6 +3403,10 @@ rite main() {
                         ⎇ cm.selecting == true {
                             ≔ text = extract_selection(cm);
                             write_clipboard(text);
+                            // Also write to claude-in.txt for external hook integration
+                            ≔ ci_dir = env("HOME") + "/.morgoth";
+                            ⎇ fs_exists(ci_dir) == false { fs_mkdir(ci_dir); }
+                            fs_write(ci_dir + "/claude-in.txt", text);
                             // Count lines in selection
                             ≔ mut sr = cm.select_start_row;
                             ≔ mut er = cm.cursor_row;
@@ -3561,6 +3622,25 @@ rite main() {
                 }
             }
             pi = pi + 1;
+        }
+
+        // Pane death check: reap exited child processes
+        ≔ mut di = 0;
+        ⟳ di < len(panes) {
+            ⎇ panes[di].alive == true ∧ panes[di].pane_type == "terminal" {
+                ≔ wait = Sys·waitpid(panes[di].pid, WNOHANG());
+                ⎇ wait.pid > 0 {
+                    panes[di].alive = false;
+                    panes[di].title = "[exited " + to_string(wait.status) + "]";
+                    // Render dim border to indicate dead pane (fg 8)
+                    ⎇ (zoomed == false ∨ di == focus) ∧ (input.copy_mode.active == false ∨ di != focus) {
+                        ≔ dead_title = pane_title(panes[di], di, focus);
+                        render_border(screen, panes[di].region, dead_title, 8, 8, di == focus);
+                        any_pane_rendered = true;
+                    }
+                }
+            }
+            di = di + 1;
         }
 
         // Monitor pane refresh (~2 seconds at 16ms)
