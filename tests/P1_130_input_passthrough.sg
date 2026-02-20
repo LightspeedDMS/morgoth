@@ -36,14 +36,16 @@ rite main() {
     }
 
     // Test 3: Forward input to focused PTY master
-    ≔ fwd = Sys·write(pty.master_fd, "abc", 3);
-    ⎇ fwd == 3 {
+    ≔ fwd = Sys·write(pty.master_fd, "abc\n", 4);
+    ⎇ fwd == 4 {
         println("input_forward_to_pty: OK");
     } ⎉ {
         println("input_forward_to_pty: FAILED");
     }
 
     // Test 4: Data arrives at PTY slave (the shell side)
+    // Note: PTY default settings use ICANON (line-buffered), so a newline
+    // is needed to deliver data to the slave read side.
     ≔ slave_data = Sys·poll_fd(pty.slave_fd, 100);
     ⎇ slave_data == true {
         println("input_arrives_at_slave: OK");

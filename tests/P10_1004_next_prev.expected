@@ -1,0 +1,8 @@
+match_count: OK
+next_1: OK
+next_2: OK
+next_wrap: OK
+prev_wrap: OK
+prev_1: OK
+nearest_fwd: OK
+nearest_bwd: OK

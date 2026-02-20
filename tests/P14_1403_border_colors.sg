@@ -1,0 +1,46 @@
+// Test: border_colors returns correct fg values for terminal/monitor x focused/unfocused
+// Spec: Phase 14 - UI Refinement
+// Priority: P14
+
+rite border_colors(pane_type, is_focused) {
+    ⎇ pane_type == "monitor" {
+        ⎇ is_focused == true { ↩ {border_fg: 13, title_fg: 15} }
+        ↩ {border_fg: 5, title_fg: 5}
+    }
+    ⎇ is_focused == true { ↩ {border_fg: 14, title_fg: 15} }
+    ↩ {border_fg: 8, title_fg: 8}
+}
+
+rite main() {
+    // Test 1: Focused terminal => bright cyan (14), white (15)
+    ≔ c1 = border_colors("terminal", true);
+    ⎇ c1.border_fg == 14 ∧ c1.title_fg == 15 {
+        println("term_focused: OK");
+    } ⎉ {
+        println("term_focused: FAILED border=" + to_string(c1.border_fg) + " title=" + to_string(c1.title_fg));
+    }
+
+    // Test 2: Unfocused terminal => dark gray (8), dark gray (8)
+    ≔ c2 = border_colors("terminal", false);
+    ⎇ c2.border_fg == 8 ∧ c2.title_fg == 8 {
+        println("term_unfocused: OK");
+    } ⎉ {
+        println("term_unfocused: FAILED border=" + to_string(c2.border_fg) + " title=" + to_string(c2.title_fg));
+    }
+
+    // Test 3: Focused monitor => bright magenta (13), white (15)
+    ≔ c3 = border_colors("monitor", true);
+    ⎇ c3.border_fg == 13 ∧ c3.title_fg == 15 {
+        println("mon_focused: OK");
+    } ⎉ {
+        println("mon_focused: FAILED border=" + to_string(c3.border_fg) + " title=" + to_string(c3.title_fg));
+    }
+
+    // Test 4: Unfocused monitor => magenta (5), magenta (5)
+    ≔ c4 = border_colors("monitor", false);
+    ⎇ c4.border_fg == 5 ∧ c4.title_fg == 5 {
+        println("mon_unfocused: OK");
+    } ⎉ {
+        println("mon_unfocused: FAILED border=" + to_string(c4.border_fg) + " title=" + to_string(c4.title_fg));
+    }
+}

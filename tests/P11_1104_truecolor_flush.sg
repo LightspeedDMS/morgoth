@@ -1,0 +1,110 @@
+// Test: Flush dirty builds correct SGR 38;2;R;G;B string from packed int
+// Spec: Phase 11 - True Color Support
+// Priority: P11
+
+rite encode_truecolor(r, g, b) {
+    ↩ 256 + r * 65536 + g * 256 + b;
+}
+
+rite decode_r(packed) {
+    ≔ raw = packed - 256;
+    ↩ raw / 65536;
+}
+
+rite decode_g(packed) {
+    ≔ raw = packed - 256;
+    ↩ (raw % 65536) / 256;
+}
+
+rite decode_b(packed) {
+    ≔ raw = packed - 256;
+    ↩ raw % 256;
+}
+
+rite build_fg_sgr(fg) {
+    ⎇ fg >= 256 {
+        ≔ raw = fg - 256;
+        ≔ r = raw / 65536;
+        ≔ g = (raw % 65536) / 256;
+        ≔ b = raw % 256;
+        ↩ "38;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b);
+    }
+    ↩ "38;5;" + to_string(fg);
+}
+
+rite build_bg_sgr(bg) {
+    ⎇ bg >= 256 {
+        ≔ raw = bg - 256;
+        ≔ r = raw / 65536;
+        ≔ g = (raw % 65536) / 256;
+        ≔ b = raw % 256;
+        ↩ "48;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b);
+    }
+    ↩ "48;5;" + to_string(bg);
+}
+
+rite main() {
+    // Test 1: Pure red fg → "38;2;255;0;0"
+    ≔ red_packed = encode_truecolor(255, 0, 0);
+    ≔ red_sgr = build_fg_sgr(red_packed);
+    ⎇ red_sgr == "38;2;255;0;0" {
+        println("flush_fg_red: OK");
+    } ⎉ {
+        println("flush_fg_red: FAILED got=" + red_sgr);
+    }
+
+    // Test 2: Pure green bg → "48;2;0;255;0"
+    ≔ green_packed = encode_truecolor(0, 255, 0);
+    ≔ green_sgr = build_bg_sgr(green_packed);
+    ⎇ green_sgr == "48;2;0;255;0" {
+        println("flush_bg_green: OK");
+    } ⎉ {
+        println("flush_bg_green: FAILED got=" + green_sgr);
+    }
+
+    // Test 3: Arbitrary color (100, 150, 200) fg
+    ≔ arb_packed = encode_truecolor(100, 150, 200);
+    ≔ arb_sgr = build_fg_sgr(arb_packed);
+    ⎇ arb_sgr == "38;2;100;150;200" {
+        println("flush_fg_arbitrary: OK");
+    } ⎉ {
+        println("flush_fg_arbitrary: FAILED got=" + arb_sgr);
+    }
+
+    // Test 4: Palette color (< 256) falls back to 38;5;N
+    ≔ pal_sgr = build_fg_sgr(196);
+    ⎇ pal_sgr == "38;5;196" {
+        println("flush_fg_palette: OK");
+    } ⎉ {
+        println("flush_fg_palette: FAILED got=" + pal_sgr);
+    }
+
+    // Test 5: Black (0,0,0) → "38;2;0;0;0"
+    ≔ black_packed = encode_truecolor(0, 0, 0);
+    ≔ black_sgr = build_fg_sgr(black_packed);
+    ⎇ black_sgr == "38;2;0;0;0" {
+        println("flush_fg_black: OK");
+    } ⎉ {
+        println("flush_fg_black: FAILED got=" + black_sgr);
+    }
+
+    // Test 6: White (255,255,255) → "48;2;255;255;255"
+    ≔ white_packed = encode_truecolor(255, 255, 255);
+    ≔ white_sgr = build_bg_sgr(white_packed);
+    ⎇ white_sgr == "48;2;255;255;255" {
+        println("flush_bg_white: OK");
+    } ⎉ {
+        println("flush_bg_white: FAILED got=" + white_sgr);
+    }
+
+    // Test 7: Roundtrip encode → decode
+    ≔ rt_packed = encode_truecolor(42, 137, 201);
+    ≔ rt_r = decode_r(rt_packed);
+    ≔ rt_g = decode_g(rt_packed);
+    ≔ rt_b = decode_b(rt_packed);
+    ⎇ rt_r == 42 ∧ rt_g == 137 ∧ rt_b == 201 {
+        println("flush_roundtrip: OK");
+    } ⎉ {
+        println("flush_roundtrip: FAILED r=" + to_string(rt_r) + " g=" + to_string(rt_g) + " b=" + to_string(rt_b));
+    }
+}

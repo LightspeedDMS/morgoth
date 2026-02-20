@@ -37,6 +37,14 @@
 ≔ BOX_RJ = "┤";
 ≔ BOX_X  = "┼";
 
+// Double-line box-drawing characters (Unicode) for focused panes
+≔ BOX2_H  = "═";
+≔ BOX2_V  = "║";
+≔ BOX2_TL = "╔";
+≔ BOX2_TR = "╗";
+≔ BOX2_BL = "╚";
+≔ BOX2_BR = "╝";
+
 // ============================================================================
 // Section 2: Data Structures
 // ============================================================================
@@ -265,6 +273,10 @@ rite vterm_resize(vt, new_rows, new_cols) {
 // Write a printable character at the cursor position
 // ch should be a string (use to_string(char_at(...)) when feeding)
 rite vterm_put_char(vt, ch) {
+    // Fullwidth char at last column: wrap early (can't split across lines)
+    ⎇ is_fullwidth(ch) == true ∧ vt.cursor_col == vt.cols - 1 ∧ vt.auto_wrap == true {
+        vt.cursor_col = vt.cols;
+    }
     // Handle line wrap (respects auto_wrap flag)
     ⎇ vt.cursor_col >= vt.cols {
         ⎇ vt.auto_wrap == true {
@@ -284,7 +296,18 @@ rite vterm_put_char(vt, ch) {
     ⎇ idx >= 0 ∧ idx < len(vt.cells) {
         vt.cells[idx] = {ch: ch, fg: vt.attr_fg, bg: vt.attr_bg};
     }
-    vt.cursor_col = vt.cursor_col + 1;
+    // Fullwidth characters occupy 2 columns
+    ⎇ is_fullwidth(ch) == true {
+        ⎇ vt.cursor_col + 1 < vt.cols {
+            ≔ idx2 = vt.cursor_row * vt.cols + vt.cursor_col + 1;
+            ⎇ idx2 >= 0 ∧ idx2 < len(vt.cells) {
+                vt.cells[idx2] = {ch: "", fg: vt.attr_fg, bg: vt.attr_bg};
+            }
+        }
+        vt.cursor_col = vt.cursor_col + 2;
+    } ⎉ {
+        vt.cursor_col = vt.cursor_col + 1;
+    }
 }
 
 // Parse CSI parameters string into array of ints
@@ -384,21 +407,14 @@ rite vterm_csi_dispatch(vt, cmd, buf) {
                     vt.attr_bg = params[pi + 2];
                     pi = pi + 2;
                 }
-                // True color foreground: 38;2;R;G;B (approximate to 256)
+                // True color foreground: 38;2;R;G;B (packed int: 256 + R*65536 + G*256 + B)
                 ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
-                    // Map to closest 256 color (16 + 36*r + 6*g + b, each 0-5)
-                    ≔ r = params[pi + 2] * 5 / 255;
-                    ≔ g = params[pi + 3] * 5 / 255;
-                    ≔ b = params[pi + 4] * 5 / 255;
-                    vt.attr_fg = 16 + 36 * r + 6 * g + b;
+                    vt.attr_fg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
                     pi = pi + 4;
                 }
-                // True color background: 48;2;R;G;B
+                // True color background: 48;2;R;G;B (packed int: 256 + R*65536 + G*256 + B)
                 ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
-                    ≔ r = params[pi + 2] * 5 / 255;
-                    ≔ g = params[pi + 3] * 5 / 255;
-                    ≔ b = params[pi + 4] * 5 / 255;
-                    vt.attr_bg = 16 + 36 * r + 6 * g + b;
+                    vt.attr_bg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
                     pi = pi + 4;
                 }
                 // Bright foreground: 90-97
@@ -1184,9 +1200,9 @@ rite relayout_panes(panes, screen_w, screen_h, screen, focus) {
             Pty·set_size(panes[i].master_fd, regions[i].h - 2, regions[i].w - 2);
         }
         vterm_blit(panes[i].vterm, screen, panes[i].region);
-        ≔ mut t = panes[i].title;
-        ⎇ i == focus { t = "[" + t + "]"; }
-        render_border(screen, panes[i].region, t);
+        ≔ t = pane_title(panes[i], i, focus);
+        ≔ tc = border_colors(panes[i].pane_type, i == focus);
+        render_border(screen, panes[i].region, t, tc.border_fg, tc.title_fg, i == focus);
         i = i + 1;
     }
     flush_dirty(screen);
@@ -1306,46 +1322,91 @@ rite Grid·clear_dirty(grid) {
 // Section 5: Rendering
 // ============================================================================
 
+// Build a pane title string with index prefix, bracketed when focused
+rite pane_title(pane, index, focus) {
+    ≔ num = to_string(index + 1);
+    ≔ base = num + ":" + pane.title;
+    ⎇ index == focus { ↩ "[" + base + "]" }
+    ↩ base
+}
+
+// Return border and title foreground colors for a pane type + focus state
+rite border_colors(pane_type, is_focused) {
+    ⎇ pane_type == "monitor" {
+        ⎇ is_focused == true { ↩ {border_fg: 13, title_fg: 15} }
+        ↩ {border_fg: 5, title_fg: 5}
+    }
+    ⎇ is_focused == true { ↩ {border_fg: 14, title_fg: 15} }
+    ↩ {border_fg: 8, title_fg: 8}
+}
+
 // Draw a border around a region in the grid
-rite render_border(grid, region, title) {
+rite render_border(grid, region, title, border_fg, title_fg, is_focused) {
     ≔ x = region.x;
     ≔ y = region.y;
     ≔ w = region.w;
     ≔ h = region.h;
 
+    // Select box-drawing chars based on focus
+    ≔ mut bh = BOX_H;
+    ≔ mut bv = BOX_V;
+    ≔ mut btl = BOX_TL;
+    ≔ mut btr = BOX_TR;
+    ≔ mut bbl = BOX_BL;
+    ≔ mut bbr = BOX_BR;
+    ⎇ is_focused == true {
+        bh = BOX2_H;
+        bv = BOX2_V;
+        btl = BOX2_TL;
+        btr = BOX2_TR;
+        bbl = BOX2_BL;
+        bbr = BOX2_BR;
+    }
+
     // Top edge
-    Grid·set(grid, y, x, BOX_TL, 6, 0);
+    Grid·set(grid, y, x, btl, border_fg, 0);
     ≔ mut c = 1;
     ⟳ c < w - 1 {
-        Grid·set(grid, y, x + c, BOX_H, 6, 0);
+        Grid·set(grid, y, x + c, bh, border_fg, 0);
         c = c + 1;
     }
-    Grid·set(grid, y, x + w - 1, BOX_TR, 6, 0);
+    Grid·set(grid, y, x + w - 1, btr, border_fg, 0);
 
     // Bottom edge
-    Grid·set(grid, y + h - 1, x, BOX_BL, 6, 0);
+    Grid·set(grid, y + h - 1, x, bbl, border_fg, 0);
     c = 1;
     ⟳ c < w - 1 {
-        Grid·set(grid, y + h - 1, x + c, BOX_H, 6, 0);
+        Grid·set(grid, y + h - 1, x + c, bh, border_fg, 0);
         c = c + 1;
     }
-    Grid·set(grid, y + h - 1, x + w - 1, BOX_BR, 6, 0);
+    Grid·set(grid, y + h - 1, x + w - 1, bbr, border_fg, 0);
 
     // Side edges
     ≔ mut r = 1;
     ⟳ r < h - 1 {
-        Grid·set(grid, y + r, x, BOX_V, 6, 0);
-        Grid·set(grid, y + r, x + w - 1, BOX_V, 6, 0);
+        Grid·set(grid, y + r, x, bv, border_fg, 0);
+        Grid·set(grid, y + r, x + w - 1, bv, border_fg, 0);
         r = r + 1;
     }
 
     // Title in top border (if provided and fits)
     ⎇ title != "" {
-        ≔ max_title_len = w - 4;
-        ⎇ max_title_len > 0 {
+        ≔ max_title_cols = w - 4;
+        ⎇ max_title_cols > 0 {
             ≔ mut ti = 0;
-            ⟳ ti < max_title_len ∧ ti < len(title) {
-                Grid·set(grid, y, x + 2 + ti, to_string(char_at(title, ti)), 15, 0);
+            ≔ mut tw = 0;
+            ⟳ ti < len(title) ∧ tw < max_title_cols {
+                ≔ tch = to_string(char_at(title, ti));
+                Grid·set(grid, y, x + 2 + tw, tch, title_fg, 0);
+                ⎇ is_fullwidth(tch) == true {
+                    // Placeholder for second column of fullwidth char
+                    ⎇ tw + 1 < max_title_cols {
+                        Grid·set(grid, y, x + 2 + tw + 1, "", title_fg, 0);
+                    }
+                    tw = tw + 2;
+                } ⎉ {
+                    tw = tw + 1;
+                }
                 ti = ti + 1;
             }
         }
@@ -1377,6 +1438,21 @@ rite render_content(grid, region, text) {
     }
 }
 
+// Build dynamic status bar text
+rite build_status_text(focus, panes, mode) {
+    ≔ ptype = panes[focus].pane_type;
+    ≔ idx = to_string(focus + 1) + "/" + to_string(len(panes));
+    ≔ mut text = " Morgoth v" + VERSION + " | [" + idx + "] " + ptype;
+    ⎇ mode == "copy" {
+        text = text + " | hjkl move  Space select  / search  Enter copy  q exit";
+    } ⎉ { ⎇ mode == "search" {
+        text = text + " | type to search  Enter accept  Esc cancel";
+    } ⎉ {
+        text = text + " | c: new  x: close  z: zoom  /: search  q: quit";
+    } }
+    ↩ text
+}
+
 // Render status bar at the bottom of the grid
 rite render_status_bar(grid, text) {
     ≔ row = grid.rows - 1;
@@ -1394,6 +1470,82 @@ rite render_status_bar(grid, text) {
     }
 }
 
+// Render styled status bar with mode pill, pane info, hints, and version
+rite render_status_bar_styled(grid, focus, panes, mode) {
+    ≔ row = grid.rows - 1;
+    ≔ mut col = 0;
+    // Fill row with spaces (fg=7, bg=0)
+    ⟳ col < grid.cols {
+        Grid·set(grid, row, col, " ", 7, 0);
+        col = col + 1;
+    }
+    col = 0;
+
+    // 1. Mode pill
+    ≔ mut pill = " NORMAL ";
+    ≔ mut pill_bg = 2;
+    ⎇ mode == "copy" {
+        pill = " COPY ";
+        pill_bg = 3;
+    } ⎉ { ⎇ mode == "search" {
+        pill = " SEARCH ";
+        pill_bg = 5;
+    } ⎉ { ⎇ mode == "confirm" {
+        pill = " CONFIRM ";
+        pill_bg = 1;
+    } } }
+    ≔ mut pi = 0;
+    ⟳ pi < len(pill) ∧ col < grid.cols {
+        Grid·set(grid, row, col, to_string(char_at(pill, pi)), 0, pill_bg);
+        col = col + 1;
+        pi = pi + 1;
+    }
+
+    // 2. Pane info
+    ≔ pane_info = " [" + to_string(focus + 1) + "/" + to_string(len(panes)) + "] " + panes[focus].pane_type + " ";
+    ≔ mut ii = 0;
+    ⟳ ii < len(pane_info) ∧ col < grid.cols {
+        Grid·set(grid, row, col, to_string(char_at(pane_info, ii)), 15, 0);
+        col = col + 1;
+        ii = ii + 1;
+    }
+
+    // 3. Separator
+    ⎇ col < grid.cols {
+        Grid·set(grid, row, col, "│", 8, 0);
+        col = col + 1;
+    }
+
+    // 4. Key hints
+    ≔ mut hints = "";
+    ⎇ mode == "copy" {
+        hints = " hjkl move  Space select  / search  Enter copy  q exit";
+    } ⎉ { ⎇ mode == "search" {
+        hints = " type to search  Enter accept  Esc cancel";
+    } ⎉ { ⎇ mode == "confirm" {
+        hints = " y: confirm  n: cancel";
+    } ⎉ {
+        hints = " c: new  x: close  z: zoom  /: search  q: quit";
+    } } }
+    ≔ mut hi = 0;
+    ⟳ hi < len(hints) ∧ col < grid.cols {
+        Grid·set(grid, row, col, to_string(char_at(hints, hi)), 8, 0);
+        col = col + 1;
+        hi = hi + 1;
+    }
+
+    // 5. Right-aligned version
+    ≔ ver = "Morgoth v" + VERSION + " ";
+    ≔ ver_start = grid.cols - len(ver);
+    ⎇ ver_start > col {
+        ≔ mut vi = 0;
+        ⟳ vi < len(ver) {
+            Grid·set(grid, row, ver_start + vi, to_string(char_at(ver, vi)), 8, 0);
+            vi = vi + 1;
+        }
+    }
+}
+
 // Flush only dirty cells to stdout using ANSI escape sequences
 // Batches consecutive cells on the same row to avoid redundant cursor positioning
 // which can interfere with multi-byte UTF-8 character rendering.
@@ -1406,7 +1558,7 @@ rite flush_dirty(grid) {
     ≔ mut last_fg = -1;
     ≔ mut last_bg = -1;
     ⟳ i < total {
-        ⎇ grid.cells[i].dirty == true {
+        ⎇ grid.cells[i].dirty == true ∧ grid.cells[i].ch != "" {
             ≔ row = i / grid.cols;
             ≔ col = i % grid.cols;
             // Only reposition cursor if not consecutive with previous cell
@@ -1415,11 +1567,23 @@ rite flush_dirty(grid) {
             }
             // Only emit color codes if they changed
             ⎇ grid.cells[i].fg != last_fg {
-                buf = buf + CSI + "38;5;" + to_string(grid.cells[i].fg) + "m";
+                ≔ fg = grid.cells[i].fg;
+                ⎇ fg >= 256 {
+                    ≔ raw_fg = fg - 256;
+                    buf = buf + CSI + "38;2;" + to_string(raw_fg / 65536) + ";" + to_string((raw_fg % 65536) / 256) + ";" + to_string(raw_fg % 256) + "m";
+                } ⎉ {
+                    buf = buf + CSI + "38;5;" + to_string(fg) + "m";
+                }
                 last_fg = grid.cells[i].fg;
             }
             ⎇ grid.cells[i].bg != last_bg {
-                buf = buf + CSI + "48;5;" + to_string(grid.cells[i].bg) + "m";
+                ≔ bg = grid.cells[i].bg;
+                ⎇ bg >= 256 {
+                    ≔ raw_bg = bg - 256;
+                    buf = buf + CSI + "48;2;" + to_string(raw_bg / 65536) + ";" + to_string((raw_bg % 65536) / 256) + ";" + to_string(raw_bg % 256) + "m";
+                } ⎉ {
+                    buf = buf + CSI + "48;5;" + to_string(bg) + "m";
+                }
                 last_bg = grid.cells[i].bg;
             }
             // Write character
@@ -1449,7 +1613,9 @@ rite extract_text_lines(vt) {
         ≔ mut line = "";
         ≔ mut ci = 0;
         ⟳ ci < len(vt.scrollback[si]) {
-            line = line + vt.scrollback[si][ci].ch;
+            ⎇ vt.scrollback[si][ci].ch != "" {
+                line = line + vt.scrollback[si][ci].ch;
+            }
             ci = ci + 1;
         }
         push(lines, line);
@@ -1462,7 +1628,7 @@ rite extract_text_lines(vt) {
         ≔ mut col = 0;
         ⟳ col < vt.cols {
             ≔ idx = row * vt.cols + col;
-            ⎇ idx < len(vt.cells) {
+            ⎇ idx < len(vt.cells) ∧ vt.cells[idx].ch != "" {
                 line = line + vt.cells[idx].ch;
             }
             col = col + 1;
@@ -1515,6 +1681,72 @@ rite write_clipboard(text) {
     ≔ encoded = base64_encode(text);
     ≔ osc = ESC + "]52;c;" + encoded + ESC + "\\";
     Sys·write(1, osc, len(osc));
+}
+
+// Search functions
+rite find_all_matches(text_lines, query) {
+    ≔ mut matches = [];
+    ⎇ query == "" { ↩ matches }
+    ≔ mut case_sensitive = false;
+    ≔ mut qi = 0;
+    ⟳ qi < len(query) {
+        ≔ c = char_code_at(query, qi);
+        ⎇ c >= 65 ∧ c <= 90 { case_sensitive = true; }
+        qi = qi + 1;
+    }
+    ≔ mut search_q = query;
+    ⎇ case_sensitive == false { search_q = lower(query); }
+    ≔ mut row = 0;
+    ⟳ row < len(text_lines) {
+        ≔ mut line = text_lines[row];
+        ⎇ case_sensitive == false { line = lower(line); }
+        ≔ mut col = 0;
+        ≔ mut remaining = line;
+        ⟳ len(remaining) >= len(search_q) {
+            ≔ idx = index_of(remaining, search_q);
+            ⎇ idx >= 0 {
+                push(matches, {row: row, col: col + idx});
+                col = col + idx + 1;
+                remaining = substring(line, col, len(line));
+            } ⎉ {
+                remaining = "";
+            }
+        }
+        row = row + 1;
+    }
+    ↩ matches
+}
+
+rite nearest_match(matches, cursor_row, direction) {
+    ⎇ len(matches) == 0 { ↩ -1 }
+    ⎇ direction == "backward" {
+        ≔ mut i = len(matches) - 1;
+        ⟳ i >= 0 {
+            ⎇ matches[i].row <= cursor_row { ↩ i }
+            i = i - 1;
+        }
+        ↩ len(matches) - 1
+    }
+    ≔ mut i = 0;
+    ⟳ i < len(matches) {
+        ⎇ matches[i].row >= cursor_row { ↩ i }
+        i = i + 1;
+    }
+    ↩ 0
+}
+
+rite is_search_match(cm, row, col) {
+    ≔ qlen = len(cm.search_query);
+    ⎇ qlen == 0 { ↩ {hit: false, current: false} }
+    ≔ mut i = 0;
+    ⟳ i < len(cm.search_matches) {
+        ≔ m = cm.search_matches[i];
+        ⎇ row == m.row ∧ col >= m.col ∧ col < m.col + qlen {
+            ↩ {hit: true, current: i == cm.search_current}
+        }
+        i = i + 1;
+    }
+    ↩ {hit: false, current: false}
 }
 
 // Cursor movement
@@ -1649,6 +1881,17 @@ rite render_copy_mode(grid, region, cm) {
                 fg = bg;
                 bg = tmp;
             }
+            // Search match highlight
+            ≔ minfo = is_search_match(cm, text_row, col);
+            ⎇ minfo.hit == true {
+                ⎇ minfo.current == true {
+                    fg = 0;
+                    bg = 3;
+                } ⎉ {
+                    fg = 0;
+                    bg = 6;
+                }
+            }
             // Cursor (bright white on black)
             ⎇ text_row == cm.cursor_row ∧ col == cm.cursor_col {
                 fg = 0;
@@ -1658,6 +1901,26 @@ rite render_copy_mode(grid, region, cm) {
             col = col + 1;
         }
         row = row + 1;
+    }
+    // Search prompt on last inner row
+    ⎇ cm.search_active == true {
+        ≔ mut prompt = "/" + cm.search_query;
+        ⎇ len(cm.search_matches) > 0 {
+            prompt = prompt + " [" + to_string(cm.search_current + 1) + "/" + to_string(len(cm.search_matches)) + "]";
+        } ⎉ {
+            ⎇ cm.search_query != "" {
+                prompt = prompt + " [Pattern not found]";
+            }
+        }
+        ≔ mut pi = 0;
+        ⟳ pi < inner_w {
+            ≔ mut pch = " ";
+            ⎇ pi < len(prompt) {
+                pch = to_string(char_at(prompt, pi));
+            }
+            Grid·set(grid, inner_y + inner_h - 1, inner_x + pi, pch, 15, 0);
+            pi = pi + 1;
+        }
     }
 }
 
@@ -1676,7 +1939,14 @@ rite CopyModeState·new() {
         select_start_row: 0,
         select_start_col: 0,
         line_mode: false,
-        text_lines: []
+        text_lines: [],
+        search_active: false,
+        search_query: "",
+        search_matches: [],
+        search_current: -1,
+        search_saved_row: 0,
+        search_saved_col: 0,
+        search_saved_viewport: 0
     }
 }
 
@@ -1701,6 +1971,95 @@ rite process_input(input_state, byte, pane_count) {
     // Copy mode intercept — before any other input handling
     ⎇ input_state.copy_mode.active == true {
         ≔ cm = input_state.copy_mode;
+        // Search input intercept — captures all input when search is active
+        ⎇ cm.search_active == true {
+            ⎇ byte == 27 {
+                // ESC: cancel search, restore position
+                cm.search_active = false;
+                cm.search_query = "";
+                cm.search_matches = [];
+                cm.search_current = -1;
+                cm.cursor_row = cm.search_saved_row;
+                cm.cursor_col = cm.search_saved_col;
+                cm.viewport_row = cm.search_saved_viewport;
+                ↩ "copy_render"
+            } ⎉ { ⎇ byte == 13 {
+                // Enter: accept search, keep position
+                cm.search_active = false;
+                ↩ "copy_render"
+            } ⎉ { ⎇ byte == 127 ∨ byte == 8 {
+                // Backspace: remove last char
+                ⎇ len(cm.search_query) > 0 {
+                    cm.search_query = substring(cm.search_query, 0, len(cm.search_query) - 1);
+                }
+                cm.search_matches = find_all_matches(cm.text_lines, cm.search_query);
+                cm.search_current = nearest_match(cm.search_matches, cm.cursor_row, "backward");
+                ⎇ cm.search_current >= 0 {
+                    cm.cursor_row = cm.search_matches[cm.search_current].row;
+                    cm.cursor_col = cm.search_matches[cm.search_current].col;
+                }
+                ↩ "copy_render"
+            } ⎉ { ⎇ byte == 14 {
+                // Ctrl-N: next match during search
+                ⎇ len(cm.search_matches) > 0 {
+                    cm.search_current = (cm.search_current + 1) % len(cm.search_matches);
+                    cm.cursor_row = cm.search_matches[cm.search_current].row;
+                    cm.cursor_col = cm.search_matches[cm.search_current].col;
+                }
+                ↩ "copy_render"
+            } ⎉ { ⎇ byte == 16 {
+                // Ctrl-P: previous match during search
+                ⎇ len(cm.search_matches) > 0 {
+                    cm.search_current = cm.search_current - 1;
+                    ⎇ cm.search_current < 0 { cm.search_current = len(cm.search_matches) - 1; }
+                    cm.cursor_row = cm.search_matches[cm.search_current].row;
+                    cm.cursor_col = cm.search_matches[cm.search_current].col;
+                }
+                ↩ "copy_render"
+            } ⎉ { ⎇ byte >= 32 ∧ byte < 127 {
+                // Printable: append to query
+                cm.search_query = cm.search_query + from_char_code(byte);
+                cm.search_matches = find_all_matches(cm.text_lines, cm.search_query);
+                cm.search_current = nearest_match(cm.search_matches, cm.cursor_row, "backward");
+                ⎇ cm.search_current >= 0 {
+                    cm.cursor_row = cm.search_matches[cm.search_current].row;
+                    cm.cursor_col = cm.search_matches[cm.search_current].col;
+                }
+                ↩ "copy_render"
+            } } } } } }
+            ↩ "none"
+        }
+        // Normal copy mode keys
+        ⎇ byte == 47 {
+            // '/' — enter search
+            cm.search_active = true;
+            cm.search_query = "";
+            cm.search_matches = [];
+            cm.search_current = -1;
+            cm.search_saved_row = cm.cursor_row;
+            cm.search_saved_col = cm.cursor_col;
+            cm.search_saved_viewport = cm.viewport_row;
+            ↩ "copy_render"
+        }
+        ⎇ byte == 110 {
+            // 'n' — next match
+            ⎇ len(cm.search_matches) > 0 {
+                cm.search_current = (cm.search_current + 1) % len(cm.search_matches);
+                cm.cursor_row = cm.search_matches[cm.search_current].row;
+                cm.cursor_col = cm.search_matches[cm.search_current].col;
+            }
+            ↩ "copy_render"
+        }
+        ⎇ byte == 78 {
+            // 'N' — previous match
+            ⎇ len(cm.search_matches) > 0 {
+                cm.search_current = cm.search_current - 1;
+                ⎇ cm.search_current < 0 { cm.search_current = len(cm.search_matches) - 1; }
+                cm.cursor_row = cm.search_matches[cm.search_current].row;
+                cm.cursor_col = cm.search_matches[cm.search_current].col;
+            }
+            ↩ "copy_render"
+        }
         ⎇ byte == 104 { copy_move_left(cm); ↩ "copy_render" }
         ⎇ byte == 106 { copy_move_down(cm); ↩ "copy_render" }
         ⎇ byte == 107 { copy_move_up(cm); ↩ "copy_render" }
@@ -1824,6 +2183,7 @@ rite process_input(input_state, byte, pane_count) {
                 ⎇ byte == 122 { action = "zoom_toggle"; }
                 ⎇ byte == 83  { action = "save_profile"; }
                 ⎇ byte == 91  { action = "copy_enter"; }
+                ⎇ byte == 47  { action = "search_enter"; }
             } ⎉ {
                 // Leader key (Ctrl-B)
                 ⎇ byte == LEADER_KEY {
@@ -2102,14 +2462,12 @@ rite main() {
     // Initial render
     i = 0;
     ⟳ i < len(panes) {
-        ≔ mut title = panes[i].title;
-        ⎇ i == focus {
-            title = "[" + title + "]";
-        }
-        render_border(screen, panes[i].region, title);
+        ≔ title = pane_title(panes[i], i, focus);
+        ≔ tc = border_colors(panes[i].pane_type, i == focus);
+        render_border(screen, panes[i].region, title, tc.border_fg, tc.title_fg, i == focus);
         i = i + 1;
     }
-    render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+    render_status_bar_styled(screen, focus, panes, "normal");
     flush_dirty(screen);
 
     // Main event loop
@@ -2134,7 +2492,7 @@ rite main() {
             ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
             grid_rows = gl.grid_rows;
             grid_cols = gl.grid_cols;
-            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+            render_status_bar_styled(screen, focus, panes, "normal");
             flush_dirty(screen);
         }
 
@@ -2155,13 +2513,12 @@ rite main() {
                         focus = (focus + 1) % len(panes);
                         ≔ mut pi = 0;
                         ⟳ pi < len(panes) {
-                            ≔ mut t = panes[pi].title;
-                            ⎇ pi == focus {
-                                t = "[" + t + "]";
-                            }
-                            render_border(screen, panes[pi].region, t);
+                            ≔ t = pane_title(panes[pi], pi, focus);
+                            ≔ tc = border_colors(panes[pi].pane_type, pi == focus);
+                            render_border(screen, panes[pi].region, t, tc.border_fg, tc.title_fg, pi == focus);
                             pi = pi + 1;
                         }
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "focus_prev" {
                         ⎇ focus == 0 {
@@ -2171,13 +2528,12 @@ rite main() {
                         }
                         ≔ mut pi = 0;
                         ⟳ pi < len(panes) {
-                            ≔ mut t = panes[pi].title;
-                            ⎇ pi == focus {
-                                t = "[" + t + "]";
-                            }
-                            render_border(screen, panes[pi].region, t);
+                            ≔ t = pane_title(panes[pi], pi, focus);
+                            ≔ tc = border_colors(panes[pi].pane_type, pi == focus);
+                            render_border(screen, panes[pi].region, t, tc.border_fg, tc.title_fg, pi == focus);
                             pi = pi + 1;
                         }
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "scroll_up" {
                         ≔ vt = panes[focus].vterm;
@@ -2185,8 +2541,9 @@ rite main() {
                             vt.scroll_offset = vt.scroll_offset + 1;
                         }
                         vterm_blit(vt, screen, panes[focus].region);
-                        ≔ sb_title = "[" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
-                        render_border(screen, panes[focus].region, sb_title);
+                        ≔ sb_title = "[" + to_string(focus + 1) + ":" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
+                        ≔ sc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, sb_title, sc.border_fg, sc.title_fg, true);
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "scroll_down" {
                         ≔ vt = panes[focus].vterm;
@@ -2194,11 +2551,12 @@ rite main() {
                             vt.scroll_offset = vt.scroll_offset - 1;
                         }
                         vterm_blit(vt, screen, panes[focus].region);
+                        ≔ sc = border_colors(panes[focus].pane_type, true);
                         ⎇ vt.scroll_offset > 0 {
-                            ≔ sb_title = "[" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
-                            render_border(screen, panes[focus].region, sb_title);
+                            ≔ sb_title = "[" + to_string(focus + 1) + ":" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
+                            render_border(screen, panes[focus].region, sb_title, sc.border_fg, sc.title_fg, true);
                         } ⎉ {
-                            render_border(screen, panes[focus].region, "[" + panes[focus].title + "]");
+                            render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), sc.border_fg, sc.title_fg, true);
                         }
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "passthrough" {
@@ -2221,7 +2579,7 @@ rite main() {
                             grid_rows = gl.grid_rows;
                             grid_cols = gl.grid_cols;
                             zoomed = false;
-                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "create_monitor" {
@@ -2234,13 +2592,13 @@ rite main() {
                             grid_rows = gl.grid_rows;
                             grid_cols = gl.grid_cols;
                             zoomed = false;
-                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "close_pane" {
                         ⎇ len(panes) > 1 {
                             input.confirming_close = true;
-                            render_status_bar(screen, " [close? y/n]");
+                            render_status_bar_styled(screen, focus, panes, "confirm");
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "close_confirm" {
@@ -2273,10 +2631,10 @@ rite main() {
                         grid_rows = gl.grid_rows;
                         grid_cols = gl.grid_cols;
                         zoomed = false;
-                        render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "close_cancel" {
-                        render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "zoom_toggle" {
                         ⎇ zoomed == true {
@@ -2286,7 +2644,7 @@ rite main() {
                             ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
                             grid_rows = gl.grid_rows;
                             grid_cols = gl.grid_cols;
-                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         } ⎉ {
                             // Zoom: focused pane fills entire screen minus status bar
@@ -2299,10 +2657,10 @@ rite main() {
                             }
                             screen = Grid·new(screen_h, screen_w);
                             vterm_blit(panes[focus].vterm, screen, panes[focus].region);
-                            ≔ mut zt = panes[focus].title;
-                            zt = "[" + zt + " (zoom)]";
-                            render_border(screen, panes[focus].region, zt);
-                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            ≔ zt = "[" + to_string(focus + 1) + ":" + panes[focus].title + " (zoom)]";
+                            ≔ zc = border_colors(panes[focus].pane_type, true);
+                            render_border(screen, panes[focus].region, zt, zc.border_fg, zc.title_fg, true);
+                            render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "copy_enter" {
@@ -2316,19 +2674,28 @@ rite main() {
                         cm.selecting = false;
                         cm.line_mode = false;
                         render_copy_mode(screen, panes[focus].region, cm);
-                        render_border(screen, panes[focus].region, "[COPY]");
-                        render_status_bar(screen, " COPY | hjkl: move | Space: select | Enter: copy | q: exit");
+                        ≔ cc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, "[" + to_string(focus + 1) + ":COPY]", cc.border_fg, cc.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "copy");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "copy_render" {
                         ≔ cm = input.copy_mode;
                         ≔ inner_h = panes[focus].region.h - 2;
                         copy_adjust_viewport(cm, inner_h);
                         render_copy_mode(screen, panes[focus].region, cm);
-                        render_border(screen, panes[focus].region, "[COPY]");
+                        ≔ crc = border_colors(panes[focus].pane_type, true);
+                        ⎇ cm.search_active == true {
+                            ≔ cr_title = "[" + to_string(focus + 1) + ":SEARCH] " + panes[focus].title;
+                            render_border(screen, panes[focus].region, cr_title, crc.border_fg, crc.title_fg, true);
+                            render_status_bar_styled(screen, focus, panes, "search");
+                        } ⎉ {
+                            render_border(screen, panes[focus].region, "[" + to_string(focus + 1) + ":COPY]", crc.border_fg, crc.title_fg, true);
+                            render_status_bar_styled(screen, focus, panes, "copy");
+                        }
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "copy_yank" {
                         ≔ cm = input.copy_mode;
-                        ≔ mut yank_msg = " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit";
+                        ≔ mut yank_msg = "";
                         ⎇ cm.selecting == true {
                             ≔ text = extract_selection(cm);
                             write_clipboard(text);
@@ -2344,10 +2711,13 @@ rite main() {
                         cm.text_lines = [];
                         // Flush: blit current vterm state
                         vterm_blit(panes[focus].vterm, screen, panes[focus].region);
-                        ≔ mut ct = panes[focus].title;
-                        ct = "[" + ct + "]";
-                        render_border(screen, panes[focus].region, ct);
-                        render_status_bar(screen, yank_msg);
+                        ≔ yc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), yc.border_fg, yc.title_fg, true);
+                        ⎇ yank_msg != "" {
+                            render_status_bar(screen, yank_msg);
+                        } ⎉ {
+                            render_status_bar_styled(screen, focus, panes, "normal");
+                        }
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "copy_exit" {
                         ≔ cm = input.copy_mode;
@@ -2355,16 +2725,40 @@ rite main() {
                         cm.text_lines = [];
                         // Flush: blit current vterm state
                         vterm_blit(panes[focus].vterm, screen, panes[focus].region);
-                        ≔ mut ct = panes[focus].title;
-                        ct = "[" + ct + "]";
-                        render_border(screen, panes[focus].region, ct);
-                        render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                        ≔ exc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), exc.border_fg, exc.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "save_profile" {
                         save_profile(panes);
                         render_status_bar(screen, " Profile saved");
                         flush_dirty(screen);
-                    } } } } } } } } } } } } } } } } } }
+                    } ⎉ { ⎇ action == "search_enter" {
+                        ≔ cm = input.copy_mode;
+                        cm.text_lines = extract_text_lines(panes[focus].vterm);
+                        cm.active = true;
+                        cm.cursor_row = len(cm.text_lines) - 1;
+                        cm.cursor_col = 0;
+                        ≔ se_inner_h = panes[focus].region.h - 2;
+                        ⎇ len(cm.text_lines) > se_inner_h {
+                            cm.viewport_row = len(cm.text_lines) - se_inner_h;
+                        } ⎉ {
+                            cm.viewport_row = 0;
+                        }
+                        cm.search_active = true;
+                        cm.search_query = "";
+                        cm.search_matches = [];
+                        cm.search_current = -1;
+                        cm.search_saved_row = cm.cursor_row;
+                        cm.search_saved_col = cm.cursor_col;
+                        cm.search_saved_viewport = cm.viewport_row;
+                        render_copy_mode(screen, panes[focus].region, cm);
+                        ≔ se_title = "[" + to_string(focus + 1) + ":SEARCH] " + panes[focus].title;
+                        ≔ sec = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, se_title, sec.border_fg, sec.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "search");
+                        flush_dirty(screen);
+                    } } } } } } } } } } } } } } } } } } }
 
                     bi = bi + 1;
                 }
@@ -2387,11 +2781,12 @@ rite main() {
                         // Only render if not zoomed or this is the focused pane, and not in copy mode for focused
                         ⎇ (zoomed == false ∨ i == focus) ∧ (input.copy_mode.active == false ∨ i != focus) {
                             vterm_blit(panes[i].vterm, screen, panes[i].region);
-                            ≔ mut bt = panes[i].title;
-                            ⎇ i == focus {
-                                bt = "[" + bt + "]";
+                            ≔ mut bt = pane_title(panes[i], i, focus);
+                            ⎇ i == focus ∧ zoomed == true {
+                                bt = "[" + to_string(i + 1) + ":" + panes[i].title + " (zoom)]";
                             }
-                            render_border(screen, panes[i].region, bt);
+                            ≔ btc = border_colors(panes[i].pane_type, i == focus);
+                            render_border(screen, panes[i].region, bt, btc.border_fg, btc.title_fg, i == focus);
                             flush_dirty(screen);
                         }
                     }
@@ -2412,11 +2807,9 @@ rite main() {
                     // Only render if not zoomed or this is the focused pane, and not in copy mode for focused
                     ⎇ (zoomed == false ∨ mi == focus) ∧ (input.copy_mode.active == false ∨ mi != focus) {
                         vterm_blit(panes[mi].vterm, screen, panes[mi].region);
-                        ≔ mut mt = panes[mi].title;
-                        ⎇ mi == focus {
-                            mt = "[" + mt + "]";
-                        }
-                        render_border(screen, panes[mi].region, mt);
+                        ≔ mt = pane_title(panes[mi], mi, focus);
+                        ≔ mc = border_colors(panes[mi].pane_type, mi == focus);
+                        render_border(screen, panes[mi].region, mt, mc.border_fg, mc.title_fg, mi == focus);
                         flush_dirty(screen);
                     }
                 }

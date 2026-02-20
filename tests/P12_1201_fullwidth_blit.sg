@@ -1,0 +1,210 @@
+// Test: Fullwidth character blit to Grid preserves placeholders
+// Spec: Phase 12 - Unicode Width Handling
+// Priority: P12
+//
+// Purpose:
+// Validates that when VTerm cells containing fullwidth characters and their
+// empty-string placeholders are blitted to a Grid, the placeholders are
+// preserved at the correct positions.
+
+rite Cell_new(ch, fg, bg, dirty) {
+    ↩ {ch: ch, fg: fg, bg: bg, dirty: dirty}
+}
+
+rite Grid_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, Cell_new(" ", 7, 0, true));
+        i = i + 1;
+    }
+    ↩ {rows: rows, cols: cols, cells: cells}
+}
+
+rite Grid_set(grid, row, col, ch, fg, bg) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        grid.cells[idx] = Cell_new(ch, fg, bg, true);
+    }
+}
+
+rite Grid_get(grid, row, col) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        ↩ grid.cells[idx]
+    }
+    ↩ Cell_new(" ", 7, 0, false)
+}
+
+rite VTerm_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, {ch: " ", fg: 7, bg: 0});
+        i = i + 1;
+    }
+    ↩ {
+        cells: cells, rows: rows, cols: cols,
+        cursor_row: 0, cursor_col: 0,
+        attr_fg: 7, attr_bg: 0,
+        esc_state: "normal", esc_buf: "",
+        scroll_top: 0, scroll_bottom: rows - 1,
+        saved_row: 0, saved_col: 0,
+        scrollback: [], scrollback_max: 1000, scroll_offset: 0,
+        alt_cells: [], alt_cursor_row: 0, alt_cursor_col: 0,
+        alt_attr_fg: 7, alt_attr_bg: 0,
+        in_alt_screen: false, cursor_visible: true,
+        app_cursor_keys: false, auto_wrap: true,
+        bracketed_paste: false, mouse_mode: 0,
+        mouse_sgr: false, origin_mode: false, title: ""
+    }
+}
+
+rite vterm_scroll_up(vt) {
+    ≔ mut row = vt.scroll_top;
+    ⟳ row < vt.scroll_bottom {
+        ≔ mut col = 0;
+        ⟳ col < vt.cols {
+            vt.cells[row * vt.cols + col] = vt.cells[(row + 1) * vt.cols + col];
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    ≔ mut col = 0;
+    ⟳ col < vt.cols {
+        vt.cells[vt.scroll_bottom * vt.cols + col] = {ch: " ", fg: 7, bg: 0};
+        col = col + 1;
+    }
+}
+
+rite vterm_put_char(vt, ch) {
+    // Fullwidth char at last column: wrap early
+    ⎇ is_fullwidth(ch) == true ∧ vt.cursor_col == vt.cols - 1 ∧ vt.auto_wrap == true {
+        vt.cursor_col = vt.cols;
+    }
+    // Handle line wrap
+    ⎇ vt.cursor_col >= vt.cols {
+        ⎇ vt.auto_wrap == true {
+            vt.cursor_col = 0;
+            vt.cursor_row = vt.cursor_row + 1;
+            ⎇ vt.cursor_row > vt.scroll_bottom {
+                vterm_scroll_up(vt);
+                vt.cursor_row = vt.scroll_bottom;
+            }
+        } ⎉ {
+            vt.cursor_col = vt.cols - 1;
+        }
+    }
+    ≔ idx = vt.cursor_row * vt.cols + vt.cursor_col;
+    ⎇ idx >= 0 ∧ idx < len(vt.cells) {
+        vt.cells[idx] = {ch: ch, fg: vt.attr_fg, bg: vt.attr_bg};
+    }
+    ⎇ is_fullwidth(ch) == true {
+        ≔ idx2 = vt.cursor_row * vt.cols + vt.cursor_col + 1;
+        ⎇ idx2 >= 0 ∧ idx2 < len(vt.cells) {
+            vt.cells[idx2] = {ch: "", fg: vt.attr_fg, bg: vt.attr_bg};
+        }
+        vt.cursor_col = vt.cursor_col + 2;
+    } ⎉ {
+        vt.cursor_col = vt.cursor_col + 1;
+    }
+}
+
+rite vterm_feed(vt, data) {
+    ≔ mut i = 0;
+    ⟳ i < len(data) {
+        ≔ ch = to_string(char_at(data, i));
+        ≔ code = char_code_at(data, i);
+
+        ⎇ vt.esc_state == "csi" {
+            ⎇ (code >= 64 ∧ code <= 90) ∨ (code >= 97 ∧ code <= 122) {
+                vt.esc_state = "normal";
+                vt.esc_buf = "";
+            } ⎉ {
+                vt.esc_buf = vt.esc_buf + ch;
+            }
+        } ⎉ {
+            ⎇ vt.esc_state == "escape" {
+                ⎇ ch == "[" { vt.esc_state = "csi"; vt.esc_buf = ""; }
+                ⎉ { vt.esc_state = "normal"; }
+            } ⎉ {
+                ⎇ code == 27 { vt.esc_state = "escape"; vt.esc_buf = ""; }
+                ⎇ code == 13 { vt.cursor_col = 0; }
+                ⎇ code == 10 {
+                    vt.cursor_row = vt.cursor_row + 1;
+                    vt.cursor_col = 0;
+                    ⎇ vt.cursor_row > vt.scroll_bottom {
+                        vterm_scroll_up(vt);
+                        vt.cursor_row = vt.scroll_bottom;
+                    }
+                }
+                ⎇ code >= 32 { vterm_put_char(vt, ch); }
+            }
+        }
+
+        i = i + 1;
+    }
+    vt.scroll_offset = 0;
+}
+
+rite vterm_blit(vt, grid, region) {
+    ≔ inner_x = region.x + 1;
+    ≔ inner_y = region.y + 1;
+    ≔ mut row = 0;
+    ⟳ row < vt.rows {
+        ≔ mut col = 0;
+        ⟳ col < vt.cols {
+            ≔ idx = row * vt.cols + col;
+            ⎇ idx < len(vt.cells) {
+                Grid_set(grid, inner_y + row, inner_x + col, vt.cells[idx].ch, vt.cells[idx].fg, vt.cells[idx].bg);
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+}
+
+rite main() {
+    ≔ vt = VTerm_new(3, 10);
+
+    // Feed "日本" — two fullwidth CJK characters
+    vterm_feed(vt, "日本");
+
+    // Test 1: VTerm cells have correct content
+    // 日 at (0,0), "" at (0,1), 本 at (0,2), "" at (0,3)
+    ≔ mut vterm_ok = true;
+    ⎇ vt.cells[0].ch != "日" { vterm_ok = false; }
+    ⎇ vt.cells[1].ch != "" { vterm_ok = false; }
+    ⎇ vt.cells[2].ch != "本" { vterm_ok = false; }
+    ⎇ vt.cells[3].ch != "" { vterm_ok = false; }
+    ⎇ vterm_ok == true {
+        println("vterm_cells: OK");
+    } ⎉ {
+        println("vterm_cells: FAILED c0=" + vt.cells[0].ch + " c1=" + vt.cells[1].ch + " c2=" + vt.cells[2].ch + " c3=" + vt.cells[3].ch);
+    }
+
+    // Test 2: Blit to Grid and verify placeholders are preserved
+    ≔ grid = Grid_new(10, 20);
+    ≔ region = {x: 0, y: 0, w: 12, h: 5};
+    vterm_blit(vt, grid, region);
+
+    // inner_x = 1, inner_y = 1
+    // VTerm (0,0) -> Grid (1,1), VTerm (0,1) -> Grid (1,2), etc.
+    ≔ g0 = Grid_get(grid, 1, 1);
+    ≔ g1 = Grid_get(grid, 1, 2);
+    ≔ g2 = Grid_get(grid, 1, 3);
+    ≔ g3 = Grid_get(grid, 1, 4);
+
+    ≔ mut blit_ok = true;
+    ⎇ g0.ch != "日" { blit_ok = false; }
+    ⎇ g1.ch != "" { blit_ok = false; }
+    ⎇ g2.ch != "本" { blit_ok = false; }
+    ⎇ g3.ch != "" { blit_ok = false; }
+    ⎇ blit_ok == true {
+        println("grid_blit: OK");
+    } ⎉ {
+        println("grid_blit: FAILED g0=" + g0.ch + " g1=" + g1.ch + " g2=" + g2.ch + " g3=" + g3.ch);
+    }
+}

@@ -1,0 +1,7 @@
+flush_fg_red: OK
+flush_bg_green: OK
+flush_fg_arbitrary: OK
+flush_fg_palette: OK
+flush_fg_black: OK
+flush_bg_white: OK
+flush_roundtrip: OK

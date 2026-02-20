@@ -1,0 +1,102 @@
+// Test: is_search_match returns true for cells in match ranges
+// Spec: Phase 10 - Scrollback Search
+// Priority: P10
+
+rite is_search_match(cm, row, col) {
+    ≔ qlen = len(cm.search_query);
+    ⎇ qlen == 0 { ↩ {hit: false, current: false} }
+    ≔ mut i = 0;
+    ⟳ i < len(cm.search_matches) {
+        ≔ m = cm.search_matches[i];
+        ⎇ row == m.row ∧ col >= m.col ∧ col < m.col + qlen {
+            ↩ {hit: true, current: i == cm.search_current}
+        }
+        i = i + 1;
+    }
+    ↩ {hit: false, current: false}
+}
+
+rite main() {
+    // Simulated copy mode state with search results
+    ≔ cm = {
+        search_query: "foo",
+        search_matches: [{row: 0, col: 2}, {row: 2, col: 5}],
+        search_current: 0
+    };
+
+    // Test 1: cell inside first match (row 0, col 2) — hit + current
+    ≔ r1 = is_search_match(cm, 0, 2);
+    ⎇ r1.hit == true ∧ r1.current == true {
+        println("match0_start: OK");
+    } ⎉ {
+        println("match0_start: FAILED");
+    }
+
+    // Test 2: cell at end of first match (row 0, col 4) — hit + current
+    ≔ r2 = is_search_match(cm, 0, 4);
+    ⎇ r2.hit == true ∧ r2.current == true {
+        println("match0_end: OK");
+    } ⎉ {
+        println("match0_end: FAILED");
+    }
+
+    // Test 3: cell just past first match (row 0, col 5) — no hit
+    ≔ r3 = is_search_match(cm, 0, 5);
+    ⎇ r3.hit == false {
+        println("past_match0: OK");
+    } ⎉ {
+        println("past_match0: FAILED");
+    }
+
+    // Test 4: cell in second match (row 2, col 6) — hit but NOT current
+    ≔ r4 = is_search_match(cm, 2, 6);
+    ⎇ r4.hit == true ∧ r4.current == false {
+        println("match1_mid: OK");
+    } ⎉ {
+        println("match1_mid: FAILED hit=" + to_string(r4.hit) + " current=" + to_string(r4.current));
+    }
+
+    // Test 5: cell before any match (row 0, col 1) — no hit
+    ≔ r5 = is_search_match(cm, 0, 1);
+    ⎇ r5.hit == false {
+        println("before_match: OK");
+    } ⎉ {
+        println("before_match: FAILED");
+    }
+
+    // Test 6: cell on row with no match (row 1, col 0) — no hit
+    ≔ r6 = is_search_match(cm, 1, 0);
+    ⎇ r6.hit == false {
+        println("no_match_row: OK");
+    } ⎉ {
+        println("no_match_row: FAILED");
+    }
+
+    // Test 7: empty query returns no hit
+    ≔ cm2 = {
+        search_query: "",
+        search_matches: [],
+        search_current: -1
+    };
+    ≔ r7 = is_search_match(cm2, 0, 0);
+    ⎇ r7.hit == false {
+        println("empty_query: OK");
+    } ⎉ {
+        println("empty_query: FAILED");
+    }
+
+    // Test 8: switch current to match 1, verify current flag changes
+    cm.search_current = 1;
+    ≔ r8 = is_search_match(cm, 0, 2);
+    ⎇ r8.hit == true ∧ r8.current == false {
+        println("current_switched: OK");
+    } ⎉ {
+        println("current_switched: FAILED");
+    }
+    ≔ r9 = is_search_match(cm, 2, 5);
+    ⎇ r9.hit == true ∧ r9.current == true {
+        println("new_current: OK");
+    } ⎉ {
+        println("new_current: FAILED");
+    }
+}

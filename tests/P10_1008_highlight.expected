@@ -1,0 +1,9 @@
+match0_start: OK
+match0_end: OK
+past_match0: OK
+match1_mid: OK
+before_match: OK
+no_match_row: OK
+empty_query: OK
+current_switched: OK
+new_current: OK

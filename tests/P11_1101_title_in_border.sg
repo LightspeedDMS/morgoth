@@ -1,0 +1,263 @@
+// Test: OSC title rendered in pane border
+// Spec: Phase 11 - OSC Title in Border
+// Priority: P11
+
+≔ BOX_H = "─";
+≔ BOX_V = "│";
+≔ BOX_TL = "┌";
+≔ BOX_TR = "┐";
+≔ BOX_BL = "└";
+≔ BOX_BR = "┘";
+
+rite Cell_new(ch, fg, bg, dirty) {
+    ↩ {ch: ch, fg: fg, bg: bg, dirty: dirty}
+}
+
+rite Grid_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, Cell_new(" ", 7, 0, true));
+        i = i + 1;
+    }
+    ↩ {rows: rows, cols: cols, cells: cells}
+}
+
+rite Grid_set(grid, row, col, ch, fg, bg) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        grid.cells[idx] = Cell_new(ch, fg, bg, true);
+    }
+}
+
+rite Grid_get(grid, row, col) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        ↩ grid.cells[idx]
+    }
+    ↩ Cell_new(" ", 7, 0, false)
+}
+
+rite VTerm_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, {ch: " ", fg: 7, bg: 0});
+        i = i + 1;
+    }
+    ↩ {
+        cells: cells, rows: rows, cols: cols,
+        cursor_row: 0, cursor_col: 0,
+        attr_fg: 7, attr_bg: 0,
+        esc_state: "normal", esc_buf: "",
+        scroll_top: 0, scroll_bottom: rows - 1,
+        saved_row: 0, saved_col: 0,
+        scrollback: [], scrollback_max: 1000, scroll_offset: 0,
+        alt_cells: [], alt_cursor_row: 0, alt_cursor_col: 0,
+        alt_attr_fg: 7, alt_attr_bg: 0,
+        in_alt_screen: false, cursor_visible: true,
+        app_cursor_keys: false, auto_wrap: true,
+        bracketed_paste: false, mouse_mode: 0,
+        mouse_sgr: false, origin_mode: false, title: ""
+    }
+}
+
+rite vterm_put_char(vt, ch) {
+    ⎇ vt.cursor_col >= vt.cols {
+        vt.cursor_col = 0;
+        vt.cursor_row = vt.cursor_row + 1;
+        ⎇ vt.cursor_row > vt.scroll_bottom {
+            vterm_scroll_up(vt);
+            vt.cursor_row = vt.scroll_bottom;
+        }
+    }
+    ≔ idx = vt.cursor_row * vt.cols + vt.cursor_col;
+    ⎇ idx >= 0 ∧ idx < len(vt.cells) {
+        vt.cells[idx] = {ch: ch, fg: vt.attr_fg, bg: vt.attr_bg};
+    }
+    vt.cursor_col = vt.cursor_col + 1;
+}
+
+rite vterm_scroll_up(vt) {
+    ≔ mut row = vt.scroll_top;
+    ⟳ row < vt.scroll_bottom {
+        ≔ mut col = 0;
+        ⟳ col < vt.cols {
+            vt.cells[row * vt.cols + col] = vt.cells[(row + 1) * vt.cols + col];
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    ≔ mut col = 0;
+    ⟳ col < vt.cols {
+        vt.cells[vt.scroll_bottom * vt.cols + col] = {ch: " ", fg: 7, bg: 0};
+        col = col + 1;
+    }
+}
+
+rite vterm_osc_dispatch(vt, buf) {
+    ≔ mut sep_idx = -1;
+    ≔ mut si = 0;
+    ⟳ si < len(buf) {
+        ⎇ to_string(char_at(buf, si)) == ";" {
+            ⎇ sep_idx == -1 { sep_idx = si; }
+        }
+        si = si + 1;
+    }
+    ⎇ sep_idx >= 0 {
+        ≔ cmd_str = substring(buf, 0, sep_idx);
+        ≔ payload = substring(buf, sep_idx + 1, len(buf));
+        ⎇ cmd_str == "0" ∨ cmd_str == "2" {
+            vt.title = payload;
+        }
+    }
+}
+
+rite vterm_feed(vt, data) {
+    ≔ mut i = 0;
+    ⟳ i < len(data) {
+        ≔ ch = to_string(char_at(data, i));
+        ≔ code = char_code_at(data, i);
+
+        ⎇ vt.esc_state == "osc" {
+            ⎇ code == 7 {
+                vterm_osc_dispatch(vt, vt.esc_buf);
+                vt.esc_state = "normal";
+                vt.esc_buf = "";
+            } ⎉ {
+                ⎇ code == 27 {
+                    vt.esc_state = "osc_esc";
+                } ⎉ {
+                    vt.esc_buf = vt.esc_buf + ch;
+                }
+            }
+        } ⎉ {
+        ⎇ vt.esc_state == "osc_esc" {
+            ⎇ ch == "\\" {
+                vterm_osc_dispatch(vt, vt.esc_buf);
+                vt.esc_state = "normal";
+                vt.esc_buf = "";
+            } ⎉ {
+                vt.esc_state = "normal";
+                vt.esc_buf = "";
+            }
+        } ⎉ {
+        ⎇ vt.esc_state == "escape" {
+            ⎇ ch == "]" { vt.esc_state = "osc"; vt.esc_buf = ""; }
+            ⎉ {
+                vt.esc_state = "normal";
+            }
+        } ⎉ {
+            // normal state
+            ⎇ code == 27 { vt.esc_state = "escape"; vt.esc_buf = ""; }
+            ⎇ code >= 32 { vterm_put_char(vt, ch); }
+        }
+        }
+        }
+
+        i = i + 1;
+    }
+}
+
+rite render_border(grid, region, title) {
+    ≔ x = region.x;
+    ≔ y = region.y;
+    ≔ w = region.w;
+    ≔ h = region.h;
+
+    // Top edge
+    Grid_set(grid, y, x, BOX_TL, 6, 0);
+    ≔ mut c = 1;
+    ⟳ c < w - 1 {
+        Grid_set(grid, y, x + c, BOX_H, 6, 0);
+        c = c + 1;
+    }
+    Grid_set(grid, y, x + w - 1, BOX_TR, 6, 0);
+
+    // Bottom edge
+    Grid_set(grid, y + h - 1, x, BOX_BL, 6, 0);
+    c = 1;
+    ⟳ c < w - 1 {
+        Grid_set(grid, y + h - 1, x + c, BOX_H, 6, 0);
+        c = c + 1;
+    }
+    Grid_set(grid, y + h - 1, x + w - 1, BOX_BR, 6, 0);
+
+    // Side edges
+    ≔ mut r = 1;
+    ⟳ r < h - 1 {
+        Grid_set(grid, y + r, x, BOX_V, 6, 0);
+        Grid_set(grid, y + r, x + w - 1, BOX_V, 6, 0);
+        r = r + 1;
+    }
+
+    // Title in top border
+    ⎇ title != "" {
+        ≔ max_title_len = w - 4;
+        ⎇ max_title_len > 0 {
+            ≔ mut ti = 0;
+            ⟳ ti < max_title_len ∧ ti < len(title) {
+                Grid_set(grid, y, x + 2 + ti, to_string(char_at(title, ti)), 15, 0);
+                ti = ti + 1;
+            }
+        }
+    }
+}
+
+rite main() {
+    // Create a 3x10 VTerm and set title via OSC 0
+    ≔ vt = VTerm_new(3, 10);
+    vterm_feed(vt, "\x1b]0;TEST\x07");
+
+    // Test 1: Title was set correctly
+    ⎇ vt.title == "TEST" {
+        println("title_set: OK");
+    } ⎉ {
+        println("title_set: FAILED title=" + vt.title);
+    }
+
+    // Test 2: Create grid and render border with title
+    ≔ grid = Grid_new(10, 20);
+    ≔ region = {x: 0, y: 0, w: 14, h: 5};
+    render_border(grid, region, vt.title);
+
+    // Check title chars at row 0, cols 2-5: "T","E","S","T"
+    ≔ c0 = Grid_get(grid, 0, 2);
+    ≔ c1 = Grid_get(grid, 0, 3);
+    ≔ c2 = Grid_get(grid, 0, 4);
+    ≔ c3 = Grid_get(grid, 0, 5);
+
+    ⎇ c0.ch == "T" ∧ c1.ch == "E" ∧ c2.ch == "S" ∧ c3.ch == "T" {
+        println("title_in_border: OK");
+    } ⎉ {
+        println("title_in_border: FAILED chars=" + c0.ch + c1.ch + c2.ch + c3.ch);
+    }
+
+    // Test 3: Title chars have fg=15 (white, title color)
+    ⎇ c0.fg == 15 ∧ c1.fg == 15 ∧ c2.fg == 15 ∧ c3.fg == 15 {
+        println("title_fg_color: OK");
+    } ⎉ {
+        println("title_fg_color: FAILED fg=" + to_string(c0.fg) + "," + to_string(c1.fg) + "," + to_string(c2.fg) + "," + to_string(c3.fg));
+    }
+
+    // Test 4: Border corners are correct
+    ≔ tl = Grid_get(grid, 0, 0);
+    ≔ tr = Grid_get(grid, 0, 13);
+    ≔ bl = Grid_get(grid, 4, 0);
+    ≔ br = Grid_get(grid, 4, 13);
+    ⎇ tl.ch == BOX_TL ∧ tr.ch == BOX_TR ∧ bl.ch == BOX_BL ∧ br.ch == BOX_BR {
+        println("border_corners: OK");
+    } ⎉ {
+        println("border_corners: FAILED tl=" + tl.ch + " tr=" + tr.ch + " bl=" + bl.ch + " br=" + br.ch);
+    }
+
+    // Test 5: Horizontal border between title chars and corners
+    ≔ h_cell = Grid_get(grid, 0, 7);
+    ⎇ h_cell.ch == BOX_H {
+        println("border_horizontal: OK");
+    } ⎉ {
+        println("border_horizontal: FAILED ch=" + h_cell.ch);
+    }
+}

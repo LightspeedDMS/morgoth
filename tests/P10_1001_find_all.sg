@@ -1,0 +1,98 @@
+// Test: find_all_matches finds all occurrences with positions
+// Spec: Phase 10 - Scrollback Search
+// Priority: P10
+
+rite find_all_matches(text_lines, query) {
+    ≔ mut matches = [];
+    ⎇ query == "" { ↩ matches }
+    ≔ mut case_sensitive = false;
+    ≔ mut qi = 0;
+    ⟳ qi < len(query) {
+        ≔ c = char_code_at(query, qi);
+        ⎇ c >= 65 ∧ c <= 90 { case_sensitive = true; }
+        qi = qi + 1;
+    }
+    ≔ mut search_q = query;
+    ⎇ case_sensitive == false { search_q = lower(query); }
+    ≔ mut row = 0;
+    ⟳ row < len(text_lines) {
+        ≔ mut line = text_lines[row];
+        ⎇ case_sensitive == false { line = lower(line); }
+        ≔ mut col = 0;
+        ≔ mut remaining = line;
+        ⟳ len(remaining) >= len(search_q) {
+            ≔ idx = index_of(remaining, search_q);
+            ⎇ idx >= 0 {
+                push(matches, {row: row, col: col + idx});
+                col = col + idx + 1;
+                remaining = substring(line, col, len(line));
+            } ⎉ {
+                remaining = "";
+            }
+        }
+        row = row + 1;
+    }
+    ↩ matches
+}
+
+rite main() {
+    ≔ lines = ["Hello World", "hello again", "no match here", "Hello Hello"];
+
+    // Test 1: find "Hello" (case sensitive since uppercase)
+    ≔ m1 = find_all_matches(lines, "Hello");
+    ⎇ len(m1) == 3 {
+        println("count_Hello: OK");
+    } ⎉ {
+        println("count_Hello: FAILED got=" + to_string(len(m1)));
+    }
+
+    // Test 2: first match position
+    ⎇ m1[0].row == 0 ∧ m1[0].col == 0 {
+        println("pos_0: OK");
+    } ⎉ {
+        println("pos_0: FAILED row=" + to_string(m1[0].row) + " col=" + to_string(m1[0].col));
+    }
+
+    // Test 3: second match position (row 3, col 0)
+    ⎇ m1[1].row == 3 ∧ m1[1].col == 0 {
+        println("pos_1: OK");
+    } ⎉ {
+        println("pos_1: FAILED row=" + to_string(m1[1].row) + " col=" + to_string(m1[1].col));
+    }
+
+    // Test 4: third match position (row 3, col 6)
+    ⎇ m1[2].row == 3 ∧ m1[2].col == 6 {
+        println("pos_2: OK");
+    } ⎉ {
+        println("pos_2: FAILED row=" + to_string(m1[2].row) + " col=" + to_string(m1[2].col));
+    }
+
+    // Test 5: empty query returns empty
+    ≔ m2 = find_all_matches(lines, "");
+    ⎇ len(m2) == 0 {
+        println("empty_query: OK");
+    } ⎉ {
+        println("empty_query: FAILED");
+    }
+
+    // Test 6: query not found
+    ≔ m3 = find_all_matches(lines, "ZZZZZ");
+    ⎇ len(m3) == 0 {
+        println("not_found: OK");
+    } ⎉ {
+        println("not_found: FAILED");
+    }
+
+    // Test 7: overlapping search positions (find "ll" in "Hello Hello")
+    ≔ m4 = find_all_matches(["Hello Hello"], "ll");
+    ⎇ len(m4) == 2 {
+        println("overlap_count: OK");
+    } ⎉ {
+        println("overlap_count: FAILED got=" + to_string(len(m4)));
+    }
+    ⎇ m4[0].col == 2 ∧ m4[1].col == 8 {
+        println("overlap_pos: OK");
+    } ⎉ {
+        println("overlap_pos: FAILED");
+    }
+}
