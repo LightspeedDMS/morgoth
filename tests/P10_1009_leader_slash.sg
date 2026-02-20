@@ -1,0 +1,136 @@
+// Test: Ctrl-B / enters copy mode + search in one step
+// Spec: Phase 10 - Scrollback Search
+// Priority: P10
+
+rite make_vterm(rows, cols) {
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < rows * cols {
+        push(cells, {ch: " ", fg: 7, bg: 0});
+        i = i + 1;
+    }
+    ↩ {
+        cells: cells,
+        rows: rows,
+        cols: cols,
+        scrollback: []
+    }
+}
+
+rite extract_text_lines(vt) {
+    ≔ mut lines = [];
+    ≔ mut si = 0;
+    ⟳ si < len(vt.scrollback) {
+        ≔ mut line = "";
+        ≔ mut ci = 0;
+        ⟳ ci < len(vt.scrollback[si]) {
+            line = line + vt.scrollback[si][ci].ch;
+            ci = ci + 1;
+        }
+        push(lines, line);
+        si = si + 1;
+    }
+    ≔ mut row = 0;
+    ⟳ row < vt.rows {
+        ≔ mut line = "";
+        ≔ mut col = 0;
+        ⟳ col < vt.cols {
+            ≔ idx = row * vt.cols + col;
+            ⎇ idx < len(vt.cells) {
+                line = line + vt.cells[idx].ch;
+            }
+            col = col + 1;
+        }
+        push(lines, line);
+        row = row + 1;
+    }
+    ↩ lines
+}
+
+rite CopyModeState_new() {
+    ↩ {
+        active: false,
+        cursor_row: 0,
+        cursor_col: 0,
+        viewport_row: 0,
+        selecting: false,
+        select_start_row: 0,
+        select_start_col: 0,
+        line_mode: false,
+        text_lines: [],
+        search_active: false,
+        search_query: "",
+        search_matches: [],
+        search_current: -1,
+        search_saved_row: 0,
+        search_saved_col: 0,
+        search_saved_viewport: 0
+    }
+}
+
+rite main() {
+    ≔ vt = make_vterm(4, 10);
+    // Fill first row
+    vt.cells[0].ch = "T";
+    vt.cells[1].ch = "e";
+    vt.cells[2].ch = "s";
+    vt.cells[3].ch = "t";
+
+    ≔ cm = CopyModeState_new();
+    ≔ region_h = 6;  // simulate region height (border + 4 inner rows + border)
+
+    // Simulate leader '/' action: enters copy mode + search in one step
+    cm.text_lines = extract_text_lines(vt);
+    cm.active = true;
+    cm.cursor_row = len(cm.text_lines) - 1;
+    cm.cursor_col = 0;
+    ≔ inner_h = region_h - 2;
+    ⎇ len(cm.text_lines) > inner_h {
+        cm.viewport_row = len(cm.text_lines) - inner_h;
+    } ⎉ {
+        cm.viewport_row = 0;
+    }
+    // Immediately activate search
+    cm.search_active = true;
+    cm.search_query = "";
+    cm.search_matches = [];
+    cm.search_current = -1;
+    cm.search_saved_row = cm.cursor_row;
+    cm.search_saved_col = cm.cursor_col;
+    cm.search_saved_viewport = cm.viewport_row;
+
+    // Test 1: copy mode active
+    ⎇ cm.active == true {
+        println("copy_active: OK");
+    } ⎉ {
+        println("copy_active: FAILED");
+    }
+
+    // Test 2: search active simultaneously
+    ⎇ cm.search_active == true {
+        println("search_active: OK");
+    } ⎉ {
+        println("search_active: FAILED");
+    }
+
+    // Test 3: cursor at last line
+    ⎇ cm.cursor_row == 3 {
+        println("cursor_last: OK");
+    } ⎉ {
+        println("cursor_last: FAILED got=" + to_string(cm.cursor_row));
+    }
+
+    // Test 4: viewport computed correctly (4 lines, inner_h=4, so viewport=0)
+    ⎇ cm.viewport_row == 0 {
+        println("viewport: OK");
+    } ⎉ {
+        println("viewport: FAILED got=" + to_string(cm.viewport_row));
+    }
+
+    // Test 5: saved position matches initial cursor
+    ⎇ cm.search_saved_row == 3 ∧ cm.search_saved_col == 0 {
+        println("saved_pos: OK");
+    } ⎉ {
+        println("saved_pos: FAILED");
+    }
+}

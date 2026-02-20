@@ -1,0 +1,61 @@
+// Test: build_status_text shows different hints per mode (normal/copy/search)
+// Spec: Phase 13 - Status Bar Enrichment
+// Priority: P13
+
+≔ VERSION = "0.1.0";
+
+rite build_status_text(focus, panes, mode) {
+    ≔ ptype = panes[focus].pane_type;
+    ≔ idx = to_string(focus + 1) + "/" + to_string(len(panes));
+    ≔ mut text = " Morgoth v" + VERSION + " | [" + idx + "] " + ptype;
+    ⎇ mode == "copy" {
+        text = text + " | hjkl move  Space select  / search  Enter copy  q exit";
+    } ⎉ { ⎇ mode == "search" {
+        text = text + " | type to search  Enter accept  Esc cancel";
+    } ⎉ {
+        text = text + " | c: new  x: close  z: zoom  /: search  q: quit";
+    } }
+    ↩ text
+}
+
+rite main() {
+    ≔ panes = [{ pane_type: "terminal" }];
+
+    // Test 1: normal mode shows normal hints
+    ≔ t1 = build_status_text(0, panes, "normal");
+    ⎇ contains(t1, "c: new") {
+        println("normal_hints: OK");
+    } ⎉ {
+        println("normal_hints: FAILED got=" + t1);
+    }
+
+    // Test 2: normal mode does NOT contain copy hints
+    ⎇ contains(t1, "hjkl move") == false {
+        println("normal_no_copy: OK");
+    } ⎉ {
+        println("normal_no_copy: FAILED got=" + t1);
+    }
+
+    // Test 3: copy mode shows copy hints
+    ≔ t2 = build_status_text(0, panes, "copy");
+    ⎇ contains(t2, "hjkl move") {
+        println("copy_hints: OK");
+    } ⎉ {
+        println("copy_hints: FAILED got=" + t2);
+    }
+
+    // Test 4: copy mode does NOT contain normal hints
+    ⎇ contains(t2, "c: new") == false {
+        println("copy_no_normal: OK");
+    } ⎉ {
+        println("copy_no_normal: FAILED got=" + t2);
+    }
+
+    // Test 5: search mode shows search hints
+    ≔ t3 = build_status_text(0, panes, "search");
+    ⎇ contains(t3, "type to search") {
+        println("search_hints: OK");
+    } ⎉ {
+        println("search_hints: FAILED got=" + t3);
+    }
+}

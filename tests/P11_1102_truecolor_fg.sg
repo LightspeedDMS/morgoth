@@ -1,0 +1,211 @@
+// Test: True color foreground via SGR 38;2;R;G;B stores packed integer
+// Spec: Phase 11 - True Color Support
+// Priority: P11
+
+rite VTerm_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, {ch: " ", fg: 7, bg: 0});
+        i = i + 1;
+    }
+    ↩ {
+        cells: cells, rows: rows, cols: cols,
+        cursor_row: 0, cursor_col: 0,
+        attr_fg: 7, attr_bg: 0,
+        esc_state: "normal", esc_buf: "",
+        scroll_top: 0, scroll_bottom: rows - 1,
+        saved_row: 0, saved_col: 0,
+        scrollback: [], scrollback_max: 1000, scroll_offset: 0,
+        alt_cells: [], alt_cursor_row: 0, alt_cursor_col: 0,
+        alt_attr_fg: 7, alt_attr_bg: 0,
+        in_alt_screen: false, cursor_visible: true,
+        app_cursor_keys: false, auto_wrap: true,
+        bracketed_paste: false, mouse_mode: 0,
+        mouse_sgr: false, origin_mode: false, title: ""
+    }
+}
+
+rite vterm_put_char(vt, ch) {
+    ⎇ vt.cursor_col >= vt.cols {
+        ⎇ vt.auto_wrap == true {
+            vt.cursor_col = 0;
+            vt.cursor_row = vt.cursor_row + 1;
+        } ⎉ {
+            vt.cursor_col = vt.cols - 1;
+        }
+    }
+    ≔ idx = vt.cursor_row * vt.cols + vt.cursor_col;
+    ⎇ idx >= 0 ∧ idx < len(vt.cells) {
+        vt.cells[idx] = {ch: ch, fg: vt.attr_fg, bg: vt.attr_bg};
+    }
+    vt.cursor_col = vt.cursor_col + 1;
+}
+
+rite vterm_scroll_up(vt) {
+    ≔ mut row = vt.scroll_top;
+    ⟳ row < vt.scroll_bottom {
+        ≔ mut col = 0;
+        ⟳ col < vt.cols {
+            ≔ dst = row * vt.cols + col;
+            ≔ src = (row + 1) * vt.cols + col;
+            vt.cells[dst] = vt.cells[src];
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    ≔ mut col = 0;
+    ⟳ col < vt.cols {
+        ≔ idx = vt.scroll_bottom * vt.cols + col;
+        vt.cells[idx] = {ch: " ", fg: 7, bg: 0};
+        col = col + 1;
+    }
+}
+
+rite vterm_parse_params(buf) {
+    ≔ mut params = [];
+    ⎇ buf != "" {
+        ≔ parts = split(buf, ";");
+        ≔ mut i = 0;
+        ⟳ i < len(parts) {
+            ⎇ parts[i] == "" { push(params, 0); } ⎉ { push(params, to_int(parts[i])); }
+            i = i + 1;
+        }
+    }
+    params
+}
+
+rite vterm_csi_dispatch(vt, cmd, buf) {
+    ≔ params = vterm_parse_params(buf);
+
+    ⎇ cmd == "m" {
+        ⎇ len(params) == 0 {
+            vt.attr_fg = 7;
+            vt.attr_bg = 0;
+        } ⎉ {
+            ≔ mut pi = 0;
+            ⟳ pi < len(params) {
+                ≔ p = params[pi];
+                ⎇ p == 0 { vt.attr_fg = 7; vt.attr_bg = 0; }
+                ⎇ p >= 30 ∧ p <= 37 { vt.attr_fg = p - 30; }
+                ⎇ p >= 40 ∧ p <= 47 { vt.attr_bg = p - 40; }
+                ⎇ p == 39 { vt.attr_fg = 7; }
+                ⎇ p == 49 { vt.attr_bg = 0; }
+                ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 5 ∧ pi + 2 < len(params) {
+                    vt.attr_fg = params[pi + 2];
+                    pi = pi + 2;
+                }
+                ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 5 ∧ pi + 2 < len(params) {
+                    vt.attr_bg = params[pi + 2];
+                    pi = pi + 2;
+                }
+                ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
+                    vt.attr_fg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
+                    pi = pi + 4;
+                }
+                ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
+                    vt.attr_bg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
+                    pi = pi + 4;
+                }
+                pi = pi + 1;
+            }
+        }
+    }
+}
+
+rite vterm_feed(vt, data) {
+    ≔ mut i = 0;
+    ⟳ i < len(data) {
+        ≔ ch = to_string(char_at(data, i));
+        ≔ code = char_code_at(data, i);
+
+        ⎇ vt.esc_state == "csi" {
+            ⎇ (code >= 64 ∧ code <= 90) ∨ (code >= 97 ∧ code <= 122) {
+                vterm_csi_dispatch(vt, ch, vt.esc_buf);
+                vt.esc_state = "normal";
+                vt.esc_buf = "";
+            } ⎉ {
+                vt.esc_buf = vt.esc_buf + ch;
+            }
+        } ⎉ {
+            ⎇ vt.esc_state == "escape" {
+                ⎇ ch == "[" { vt.esc_state = "csi"; vt.esc_buf = ""; }
+                ⎉ { vt.esc_state = "normal"; }
+            } ⎉ {
+                ⎇ code == 27 { vt.esc_state = "escape"; vt.esc_buf = ""; }
+                ⎇ code == 13 { vt.cursor_col = 0; }
+                ⎇ code == 10 {
+                    vt.cursor_col = 0;
+                    vt.cursor_row = vt.cursor_row + 1;
+                    ⎇ vt.cursor_row > vt.scroll_bottom {
+                        vterm_scroll_up(vt);
+                        vt.cursor_row = vt.scroll_bottom;
+                    }
+                }
+                ⎇ code >= 32 { vterm_put_char(vt, ch); }
+            }
+        }
+
+        i = i + 1;
+    }
+}
+
+rite main() {
+    ≔ vt = VTerm_new(4, 10);
+
+    // Feed true color foreground: ESC[38;2;255;128;64m then "A"
+    vterm_feed(vt, "\x1b[38;2;255;128;64m");
+    vterm_feed(vt, "A");
+
+    // Expected packed value: 256 + 255*65536 + 128*256 + 64
+    // = 256 + 16711680 + 32768 + 64 = 16744768
+    ≔ expected = 256 + 255 * 65536 + 128 * 256 + 64;
+    ≔ cell_fg = vt.cells[0].fg;
+
+    // Test 1: packed value matches
+    ⎇ cell_fg == expected {
+        println("truecolor_fg_packed: OK");
+    } ⎉ {
+        println("truecolor_fg_packed: FAILED expected=" + to_string(expected) + " got=" + to_string(cell_fg));
+    }
+
+    // Test 2: decode R
+    ≔ raw = cell_fg - 256;
+    ≔ r = raw / 65536;
+    ⎇ r == 255 {
+        println("truecolor_fg_r: OK");
+    } ⎉ {
+        println("truecolor_fg_r: FAILED expected=255 got=" + to_string(r));
+    }
+
+    // Test 3: decode G
+    ≔ g = (raw % 65536) / 256;
+    ⎇ g == 128 {
+        println("truecolor_fg_g: OK");
+    } ⎉ {
+        println("truecolor_fg_g: FAILED expected=128 got=" + to_string(g));
+    }
+
+    // Test 4: decode B
+    ≔ b = raw % 256;
+    ⎇ b == 64 {
+        println("truecolor_fg_b: OK");
+    } ⎉ {
+        println("truecolor_fg_b: FAILED expected=64 got=" + to_string(b));
+    }
+
+    // Test 5: value is above palette range
+    ⎇ cell_fg >= 256 {
+        println("truecolor_fg_above_palette: OK");
+    } ⎉ {
+        println("truecolor_fg_above_palette: FAILED fg=" + to_string(cell_fg));
+    }
+
+    // Test 6: bg unchanged (still default 0)
+    ⎇ vt.cells[0].bg == 0 {
+        println("truecolor_fg_bg_unchanged: OK");
+    } ⎉ {
+        println("truecolor_fg_bg_unchanged: FAILED bg=" + to_string(vt.cells[0].bg));
+    }
+}

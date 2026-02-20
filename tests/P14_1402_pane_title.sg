@@ -1,0 +1,47 @@
+// Test: pane_title returns numbered titles, bracketed when focused
+// Spec: Phase 14 - UI Refinement
+// Priority: P14
+
+rite pane_title(pane, index, focus) {
+    ≔ num = to_string(index + 1);
+    ≔ base = num + ":" + pane.title;
+    ⎇ index == focus { ↩ "[" + base + "]" }
+    ↩ base
+}
+
+rite main() {
+    ≔ pane_a = { title: "bash", pane_type: "terminal" };
+    ≔ pane_b = { title: "monitor", pane_type: "monitor" };
+
+    // Test 1: Focused pane (index 0, focus 0) => "[1:bash]"
+    ≔ t1 = pane_title(pane_a, 0, 0);
+    ⎇ t1 == "[1:bash]" {
+        println("title_focused: OK");
+    } ⎉ {
+        println("title_focused: FAILED got=" + t1);
+    }
+
+    // Test 2: Unfocused pane (index 1, focus 0) => "2:monitor"
+    ≔ t2 = pane_title(pane_b, 1, 0);
+    ⎇ t2 == "2:monitor" {
+        println("title_unfocused: OK");
+    } ⎉ {
+        println("title_unfocused: FAILED got=" + t2);
+    }
+
+    // Test 3: Second pane focused (index 1, focus 1) => "[2:monitor]"
+    ≔ t3 = pane_title(pane_b, 1, 1);
+    ⎇ t3 == "[2:monitor]" {
+        println("title_second_focused: OK");
+    } ⎉ {
+        println("title_second_focused: FAILED got=" + t3);
+    }
+
+    // Test 4: First pane unfocused (index 0, focus 1) => "1:bash"
+    ≔ t4 = pane_title(pane_a, 0, 1);
+    ⎇ t4 == "1:bash" {
+        println("title_first_unfocused: OK");
+    } ⎉ {
+        println("title_first_unfocused: FAILED got=" + t4);
+    }
+}

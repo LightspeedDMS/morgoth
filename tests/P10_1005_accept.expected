@@ -1,0 +1,5 @@
+match_count: OK
+search_deactivated: OK
+cursor_at_match: OK
+copy_still_active: OK
+matches_preserved: OK

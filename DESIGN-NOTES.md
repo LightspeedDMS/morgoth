@@ -84,6 +84,13 @@ ecosystem.
 - Terminal resize handling and propagation
 - Efficient screen rendering with multiple active panes
 
+## Known Issues / TODO
+
+- **Event loop latency**: Full morgoth feels slightly less snappy than the
+  minimal PTY debug harness. Investigate whether VTerm/Grid rendering overhead
+  or the 16ms sleep interval is the bottleneck. Consider using poll with a
+  timeout across all fds instead of separate poll(0) calls + sleep.
+
 ## Distribution
 
 - Intended for public use — not just a personal tool

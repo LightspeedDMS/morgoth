@@ -1,0 +1,45 @@
+// Test: display_width returns correct column counts for strings
+// Spec: Phase 12 - Unicode Width Handling
+// Priority: P12
+//
+// Purpose:
+// Validates that display_width() correctly computes the visual column width
+// of strings containing ASCII characters (width 1) and fullwidth CJK
+// characters (width 2).
+
+rite main() {
+    // Test 1: Pure ASCII — each char is width 1
+    ⎇ display_width("hello") == 5 {
+        println("width_ascii: OK");
+    } ⎉ {
+        println("width_ascii: FAILED got=" + to_string(display_width("hello")));
+    }
+
+    // Test 2: Pure CJK — each char is width 2
+    ⎇ display_width("中文") == 4 {
+        println("width_cjk: OK");
+    } ⎉ {
+        println("width_cjk: FAILED got=" + to_string(display_width("中文")));
+    }
+
+    // Test 3: Mixed ASCII + CJK — A(1) + 中(2) + B(1) = 4
+    ⎇ display_width("A中B") == 4 {
+        println("width_mixed: OK");
+    } ⎉ {
+        println("width_mixed: FAILED got=" + to_string(display_width("A中B")));
+    }
+
+    // Test 4: Empty string — width 0
+    ⎇ display_width("") == 0 {
+        println("width_empty: OK");
+    } ⎉ {
+        println("width_empty: FAILED got=" + to_string(display_width("")));
+    }
+
+    // Test 5: Short ASCII — 3 chars = width 3
+    ⎇ display_width("ABC") == 3 {
+        println("width_short: OK");
+    } ⎉ {
+        println("width_short: FAILED got=" + to_string(display_width("ABC")));
+    }
+}

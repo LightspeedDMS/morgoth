@@ -1,0 +1,7 @@
+truecolor_fg_set: OK
+truecolor_bg_set: OK
+reset_fg_default: OK
+reset_bg_default: OK
+attr_fg_default: OK
+attr_bg_default: OK
+original_cell_preserved: OK

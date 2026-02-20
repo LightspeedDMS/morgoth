@@ -1,0 +1,52 @@
+// Test: build_status_text shows correct pane index [N/M]
+// Spec: Phase 13 - Status Bar Enrichment
+// Priority: P13
+
+≔ VERSION = "0.1.0";
+
+rite build_status_text(focus, panes, mode) {
+    ≔ ptype = panes[focus].pane_type;
+    ≔ idx = to_string(focus + 1) + "/" + to_string(len(panes));
+    ≔ mut text = " Morgoth v" + VERSION + " | [" + idx + "] " + ptype;
+    ⎇ mode == "copy" {
+        text = text + " | hjkl move  Space select  / search  Enter copy  q exit";
+    } ⎉ { ⎇ mode == "search" {
+        text = text + " | type to search  Enter accept  Esc cancel";
+    } ⎉ {
+        text = text + " | c: new  x: close  z: zoom  /: search  q: quit";
+    } }
+    ↩ text
+}
+
+rite main() {
+    ≔ panes3 = [
+        { pane_type: "terminal" },
+        { pane_type: "monitor" },
+        { pane_type: "terminal" }
+    ];
+
+    // Test 1: focus=0 in 3 panes => [1/3]
+    ≔ t1 = build_status_text(0, panes3, "normal");
+    ⎇ contains(t1, "[1/3]") {
+        println("index_first: OK");
+    } ⎉ {
+        println("index_first: FAILED got=" + t1);
+    }
+
+    // Test 2: focus=2 in 3 panes => [3/3]
+    ≔ t2 = build_status_text(2, panes3, "normal");
+    ⎇ contains(t2, "[3/3]") {
+        println("index_last: OK");
+    } ⎉ {
+        println("index_last: FAILED got=" + t2);
+    }
+
+    // Test 3: single pane => [1/1]
+    ≔ panes1 = [{ pane_type: "terminal" }];
+    ≔ t3 = build_status_text(0, panes1, "normal");
+    ⎇ contains(t3, "[1/1]") {
+        println("index_single: OK");
+    } ⎉ {
+        println("index_single: FAILED got=" + t3);
+    }
+}

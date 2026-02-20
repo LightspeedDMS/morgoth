@@ -1,0 +1,84 @@
+// Test: Enter search mode from copy mode
+// Spec: Phase 10 - Scrollback Search
+// Priority: P10
+
+rite CopyModeState_new() {
+    ↩ {
+        active: false,
+        cursor_row: 0,
+        cursor_col: 0,
+        viewport_row: 0,
+        selecting: false,
+        select_start_row: 0,
+        select_start_col: 0,
+        line_mode: false,
+        text_lines: [],
+        search_active: false,
+        search_query: "",
+        search_matches: [],
+        search_current: -1,
+        search_saved_row: 0,
+        search_saved_col: 0,
+        search_saved_viewport: 0
+    }
+}
+
+rite main() {
+    ≔ cm = CopyModeState_new();
+    cm.active = true;
+    cm.text_lines = ["Hello World", "Foo Bar", "Baz Qux"];
+    cm.cursor_row = 2;
+    cm.cursor_col = 3;
+    cm.viewport_row = 0;
+
+    // Simulate pressing '/' (byte 47) to enter search
+    cm.search_active = true;
+    cm.search_query = "";
+    cm.search_matches = [];
+    cm.search_current = -1;
+    cm.search_saved_row = cm.cursor_row;
+    cm.search_saved_col = cm.cursor_col;
+    cm.search_saved_viewport = cm.viewport_row;
+
+    // Test 1: search is active
+    ⎇ cm.search_active == true {
+        println("search_active: OK");
+    } ⎉ {
+        println("search_active: FAILED");
+    }
+
+    // Test 2: saved position matches pre-search cursor
+    ⎇ cm.search_saved_row == 2 ∧ cm.search_saved_col == 3 {
+        println("saved_position: OK");
+    } ⎉ {
+        println("saved_position: FAILED");
+    }
+
+    // Test 3: saved viewport
+    ⎇ cm.search_saved_viewport == 0 {
+        println("saved_viewport: OK");
+    } ⎉ {
+        println("saved_viewport: FAILED");
+    }
+
+    // Test 4: query is empty
+    ⎇ cm.search_query == "" {
+        println("empty_query: OK");
+    } ⎉ {
+        println("empty_query: FAILED");
+    }
+
+    // Test 5: matches is empty
+    ⎇ len(cm.search_matches) == 0 {
+        println("no_matches: OK");
+    } ⎉ {
+        println("no_matches: FAILED");
+    }
+
+    // Test 6: current is -1
+    ⎇ cm.search_current == -1 {
+        println("current_neg1: OK");
+    } ⎉ {
+        println("current_neg1: FAILED");
+    }
+}

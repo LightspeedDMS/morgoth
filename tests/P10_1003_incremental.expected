@@ -1,0 +1,8 @@
+query_a: 11
+query_ap: 3
+query_app: 3
+query_appl: 2
+query_apple: 1
+backspace_appl: 2
+monotonic: OK
+backspace_widens: OK
