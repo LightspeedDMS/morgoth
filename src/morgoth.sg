@@ -345,6 +345,12 @@ rite vterm_csi_dispatch(vt, cmd, buf) {
         dec_handled = true;
     }
 
+    // SGR mouse from child process: CSI < prefix — strip and ignore (mouse events from
+    // child output are display-only; we don't re-interpret them in our own VTerm)
+    ⎇ dec_handled == false ∧ len(buf) > 0 ∧ starts_with(buf, "<") == true {
+        dec_handled = true;
+    }
+
   ⎇ dec_handled == false {
     ≔ params = vterm_parse_params(buf);
     ≔ mut n = 0;
