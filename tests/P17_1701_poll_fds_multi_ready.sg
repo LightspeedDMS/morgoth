@@ -1,0 +1,48 @@
+// Test: poll_fds with multiple ready fds at once
+// Spec: Phase 17 - Batch Poll
+// Priority: P17
+
+rite main() {
+    ≔ pipe_a = Sys·pipe();
+    ≔ pipe_b = Sys·pipe();
+    ≔ pipe_c = Sys·pipe();
+
+    // Write data to a and c, leave b empty
+    ≔ foo = "foo";
+    ≔ bar = "bar";
+    Sys·write(pipe_a.write_fd, foo, len(foo));
+    Sys·write(pipe_c.write_fd, bar, len(bar));
+
+    ≔ results = Sys·poll_fds([pipe_a.read_fd, pipe_b.read_fd, pipe_c.read_fd], 0);
+
+    ⎇ results[0] == true {
+        println("pipe_a_ready: OK");
+    } ⎉ {
+        println("pipe_a_ready: FAILED");
+    }
+
+    ⎇ results[1] == false {
+        println("pipe_b_not_ready: OK");
+    } ⎉ {
+        println("pipe_b_not_ready: FAILED");
+    }
+
+    ⎇ results[2] == true {
+        println("pipe_c_ready: OK");
+    } ⎉ {
+        println("pipe_c_ready: FAILED");
+    }
+
+    ⎇ len(results) == 3 {
+        println("result_len: OK");
+    } ⎉ {
+        println("result_len: FAILED got=" + to_string(len(results)));
+    }
+
+    Sys·close(pipe_a.read_fd);
+    Sys·close(pipe_a.write_fd);
+    Sys·close(pipe_b.read_fd);
+    Sys·close(pipe_b.write_fd);
+    Sys·close(pipe_c.read_fd);
+    Sys·close(pipe_c.write_fd);
+}

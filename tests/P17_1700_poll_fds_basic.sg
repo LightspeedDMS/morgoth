@@ -1,0 +1,38 @@
+// Test: poll_fds returns array of bools — one ready, one empty pipe
+// Spec: Phase 17 - Batch Poll
+// Priority: P17
+
+rite main() {
+    ≔ pipe1 = Sys·pipe();
+    ≔ pipe2 = Sys·pipe();
+
+    // Write data to pipe1's write end so read end is ready
+    ≔ data = "hello";
+    Sys·write(pipe1.write_fd, data, len(data));
+
+    // pipe2 has no data — not ready
+    ≔ results = Sys·poll_fds([pipe1.read_fd, pipe2.read_fd], 0);
+
+    ⎇ results[0] == true {
+        println("pipe1_ready: OK");
+    } ⎉ {
+        println("pipe1_ready: FAILED");
+    }
+
+    ⎇ results[1] == false {
+        println("pipe2_not_ready: OK");
+    } ⎉ {
+        println("pipe2_not_ready: FAILED");
+    }
+
+    ⎇ len(results) == 2 {
+        println("result_len: OK");
+    } ⎉ {
+        println("result_len: FAILED got=" + to_string(len(results)));
+    }
+
+    Sys·close(pipe1.read_fd);
+    Sys·close(pipe1.write_fd);
+    Sys·close(pipe2.read_fd);
+    Sys·close(pipe2.write_fd);
+}

@@ -1,0 +1,4 @@
+pipe_a_ready: OK
+pipe_b_not_ready: OK
+pipe_c_ready: OK
+result_len: OK

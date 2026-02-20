@@ -1,0 +1,39 @@
+// Test: poll_fds with stdin fd 0 in the array — must not crash
+// Spec: Phase 17 - Batch Poll
+// Priority: P17
+// Validates that fd 0 can be included alongside fake fds without error,
+// and that the result array has the correct length.
+// (stdin readiness is environment-dependent; only pipe detection is asserted.)
+
+rite main() {
+    ≔ pipe1 = Sys·pipe();
+    ≔ data = "data";
+    Sys·write(pipe1.write_fd, data, len(data));
+
+    // Include fd 0 (stdin) alongside a ready pipe
+    ≔ results = Sys·poll_fds([0, pipe1.read_fd], 0);
+
+    // Result array must have exactly 2 elements
+    ⎇ len(results) == 2 {
+        println("result_len: OK");
+    } ⎉ {
+        println("result_len: FAILED got=" + to_string(len(results)));
+    }
+
+    // pipe1 read end has data written to it → must be ready
+    ⎇ results[1] == true {
+        println("pipe_ready: OK");
+    } ⎉ {
+        println("pipe_ready: FAILED");
+    }
+
+    // results[0] is a bool (either true or false — no assert on value)
+    ⎇ type_of(results[0]) == "bool" {
+        println("stdin_is_bool: OK");
+    } ⎉ {
+        println("stdin_is_bool: FAILED type=" + type_of(results[0]));
+    }
+
+    Sys·close(pipe1.read_fd);
+    Sys·close(pipe1.write_fd);
+}

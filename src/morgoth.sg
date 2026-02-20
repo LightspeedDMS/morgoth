@@ -2623,9 +2623,8 @@ rite main() {
     flush_dirty(screen);
 
     // Main event loop
+    ≔ mut had_activity_prev = false;
     ⟳ running == true {
-        ≔ mut had_activity = false;
-
         // Check for signals
         ⎇ Sys·signal_pending(SIGTERM()) == true ∨ Sys·signal_pending(SIGINT()) == true {
             running = false;
@@ -2650,8 +2649,28 @@ rite main() {
             flush_dirty(screen);
         }
 
+        // Build fd list for batch poll: stdin + alive terminal panes
+        ≔ mut poll_fds_arr = [];
+        ≔ mut pane_fd_map = [];
+        push(poll_fds_arr, 0);
+        i = 0;
+        ⟳ i < len(panes) {
+            ⎇ panes[i].alive == true ∧ panes[i].pane_type == "terminal" {
+                push(poll_fds_arr, panes[i].master_fd);
+                push(pane_fd_map, i);
+            }
+            i = i + 1;
+        }
+
+        // One batch poll per iteration — blocks up to POLL_INTERVAL_MS when idle
+        ≔ mut poll_timeout = 0;
+        ⎇ had_activity_prev == false { poll_timeout = POLL_INTERVAL_MS; }
+        ≔ poll_ready = Sys·poll_fds(poll_fds_arr, poll_timeout);
+
+        ≔ mut had_activity = false;
+
         // Poll stdin for user input
-        ⎇ Sys·poll_fd(0, 0) == true {
+        ⎇ poll_ready[0] == true {
             ≔ input_data = Sys·read_string(0, 256);
             ⎇ input_data != "" {
                 had_activity = true;
@@ -3027,18 +3046,20 @@ rite main() {
             }
         }
 
-        // Poll each pane's PTY for output — drain loop with budget
+        // Poll each terminal pane's PTY for output — drain loop with budget
+        // Uses batch poll_ready results; pane_fd_map[pi] maps poll index → pane index
         ≔ mut any_pane_rendered = false;
-        i = 0;
-        ⟳ i < len(panes) {
-            ⎇ panes[i].alive == true {
+        ≔ mut pi = 0;
+        ⟳ pi < len(pane_fd_map) {
+            ≔ pane_i = pane_fd_map[pi];
+            ⎇ poll_ready[pi + 1] == true {
                 ≔ mut pty_total = 0;
                 ≔ mut pty_done = false;
                 ⟳ pty_done == false ∧ pty_total < PTY_FRAME_BUDGET {
-                    ⎇ Sys·poll_fd(panes[i].master_fd, 0) == true {
-                        ≔ chunk = Sys·read_string(panes[i].master_fd, PTY_READ_CHUNK);
+                    ⎇ Sys·poll_fd(panes[pane_i].master_fd, 0) == true {
+                        ≔ chunk = Sys·read_string(panes[pane_i].master_fd, PTY_READ_CHUNK);
                         ⎇ chunk != "" {
-                            vterm_feed(panes[i].vterm, chunk);
+                            vterm_feed(panes[pane_i].vterm, chunk);
                             pty_total = pty_total + len(chunk);
                         } ⎉ {
                             pty_done = true;
@@ -3050,23 +3071,23 @@ rite main() {
                 ⎇ pty_total > 0 {
                     had_activity = true;
                     // Update pane title from VTerm if set by OSC
-                    ⎇ panes[i].vterm.title != "" {
-                        panes[i].title = panes[i].vterm.title;
+                    ⎇ panes[pane_i].vterm.title != "" {
+                        panes[pane_i].title = panes[pane_i].vterm.title;
                     }
                     // Only render if not zoomed or this is the focused pane, and not in copy mode for focused
-                    ⎇ (zoomed == false ∨ i == focus) ∧ (input.copy_mode.active == false ∨ i != focus) {
-                        vterm_blit(panes[i].vterm, screen, panes[i].region);
-                        ≔ mut bt = pane_title(panes[i], i, focus);
-                        ⎇ i == focus ∧ zoomed == true {
-                            bt = "[" + to_string(i + 1) + ":" + panes[i].title + " (zoom)]";
+                    ⎇ (zoomed == false ∨ pane_i == focus) ∧ (input.copy_mode.active == false ∨ pane_i != focus) {
+                        vterm_blit(panes[pane_i].vterm, screen, panes[pane_i].region);
+                        ≔ mut bt = pane_title(panes[pane_i], pane_i, focus);
+                        ⎇ pane_i == focus ∧ zoomed == true {
+                            bt = "[" + to_string(pane_i + 1) + ":" + panes[pane_i].title + " (zoom)]";
                         }
-                        ≔ btc = border_colors(panes[i].pane_type, i == focus);
-                        render_border(screen, panes[i].region, bt, btc.border_fg, btc.title_fg, i == focus);
+                        ≔ btc = border_colors(panes[pane_i].pane_type, pane_i == focus);
+                        render_border(screen, panes[pane_i].region, bt, btc.border_fg, btc.title_fg, pane_i == focus);
                         any_pane_rendered = true;
                     }
                 }
             }
-            i = i + 1;
+            pi = pi + 1;
         }
 
         // Monitor pane refresh (~2 seconds at 16ms)
@@ -3111,10 +3132,9 @@ rite main() {
             }
         }
 
-        // Adaptive sleep — only sleep when idle, wake immediately on stdin data
-        ⎇ had_activity == false {
-            Sys·poll_fd(0, POLL_INTERVAL_MS);
-        }
+        // Track activity for next iteration's poll timeout
+        // (poll_fds timeout replaces the per-iteration adaptive sleep)
+        had_activity_prev = had_activity;
     }
 
     // Shutdown
