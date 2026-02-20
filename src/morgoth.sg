@@ -2568,7 +2568,14 @@ rite main() {
                         ≔ inner_h = panes[focus].region.h - 2;
                         copy_adjust_viewport(cm, inner_h);
                         render_copy_mode(screen, panes[focus].region, cm);
-                        render_border(screen, panes[focus].region, "[COPY]");
+                        ⎇ cm.search_active == true {
+                            ≔ cr_title = "[SEARCH] " + panes[focus].title;
+                            render_border(screen, panes[focus].region, cr_title);
+                            render_status_bar(screen, build_status_text(focus, panes, "search"));
+                        } ⎉ {
+                            render_border(screen, panes[focus].region, "[COPY]");
+                            render_status_bar(screen, build_status_text(focus, panes, "copy"));
+                        }
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "copy_yank" {
                         ≔ cm = input.copy_mode;
@@ -2657,7 +2664,11 @@ rite main() {
                             vterm_blit(panes[i].vterm, screen, panes[i].region);
                             ≔ mut bt = panes[i].title;
                             ⎇ i == focus {
-                                bt = "[" + bt + "]";
+                                ⎇ zoomed == true {
+                                    bt = "[" + bt + " (zoom)]";
+                                } ⎉ {
+                                    bt = "[" + bt + "]";
+                                }
                             }
                             render_border(screen, panes[i].region, bt);
                             flush_dirty(screen);
