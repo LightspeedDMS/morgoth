@@ -265,6 +265,10 @@ rite vterm_resize(vt, new_rows, new_cols) {
 // Write a printable character at the cursor position
 // ch should be a string (use to_string(char_at(...)) when feeding)
 rite vterm_put_char(vt, ch) {
+    // Fullwidth char at last column: wrap early (can't split across lines)
+    ⎇ is_fullwidth(ch) == true ∧ vt.cursor_col == vt.cols - 1 ∧ vt.auto_wrap == true {
+        vt.cursor_col = vt.cols;
+    }
     // Handle line wrap (respects auto_wrap flag)
     ⎇ vt.cursor_col >= vt.cols {
         ⎇ vt.auto_wrap == true {
@@ -284,7 +288,18 @@ rite vterm_put_char(vt, ch) {
     ⎇ idx >= 0 ∧ idx < len(vt.cells) {
         vt.cells[idx] = {ch: ch, fg: vt.attr_fg, bg: vt.attr_bg};
     }
-    vt.cursor_col = vt.cursor_col + 1;
+    // Fullwidth characters occupy 2 columns
+    ⎇ is_fullwidth(ch) == true {
+        ⎇ vt.cursor_col + 1 < vt.cols {
+            ≔ idx2 = vt.cursor_row * vt.cols + vt.cursor_col + 1;
+            ⎇ idx2 >= 0 ∧ idx2 < len(vt.cells) {
+                vt.cells[idx2] = {ch: "", fg: vt.attr_fg, bg: vt.attr_bg};
+            }
+        }
+        vt.cursor_col = vt.cursor_col + 2;
+    } ⎉ {
+        vt.cursor_col = vt.cursor_col + 1;
+    }
 }
 
 // Parse CSI parameters string into array of ints
@@ -384,21 +399,14 @@ rite vterm_csi_dispatch(vt, cmd, buf) {
                     vt.attr_bg = params[pi + 2];
                     pi = pi + 2;
                 }
-                // True color foreground: 38;2;R;G;B (approximate to 256)
+                // True color foreground: 38;2;R;G;B (packed int: 256 + R*65536 + G*256 + B)
                 ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
-                    // Map to closest 256 color (16 + 36*r + 6*g + b, each 0-5)
-                    ≔ r = params[pi + 2] * 5 / 255;
-                    ≔ g = params[pi + 3] * 5 / 255;
-                    ≔ b = params[pi + 4] * 5 / 255;
-                    vt.attr_fg = 16 + 36 * r + 6 * g + b;
+                    vt.attr_fg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
                     pi = pi + 4;
                 }
-                // True color background: 48;2;R;G;B
+                // True color background: 48;2;R;G;B (packed int: 256 + R*65536 + G*256 + B)
                 ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
-                    ≔ r = params[pi + 2] * 5 / 255;
-                    ≔ g = params[pi + 3] * 5 / 255;
-                    ≔ b = params[pi + 4] * 5 / 255;
-                    vt.attr_bg = 16 + 36 * r + 6 * g + b;
+                    vt.attr_bg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
                     pi = pi + 4;
                 }
                 // Bright foreground: 90-97
@@ -1341,11 +1349,22 @@ rite render_border(grid, region, title) {
 
     // Title in top border (if provided and fits)
     ⎇ title != "" {
-        ≔ max_title_len = w - 4;
-        ⎇ max_title_len > 0 {
+        ≔ max_title_cols = w - 4;
+        ⎇ max_title_cols > 0 {
             ≔ mut ti = 0;
-            ⟳ ti < max_title_len ∧ ti < len(title) {
-                Grid·set(grid, y, x + 2 + ti, to_string(char_at(title, ti)), 15, 0);
+            ≔ mut tw = 0;
+            ⟳ ti < len(title) ∧ tw < max_title_cols {
+                ≔ tch = to_string(char_at(title, ti));
+                Grid·set(grid, y, x + 2 + tw, tch, 15, 0);
+                ⎇ is_fullwidth(tch) == true {
+                    // Placeholder for second column of fullwidth char
+                    ⎇ tw + 1 < max_title_cols {
+                        Grid·set(grid, y, x + 2 + tw + 1, "", 15, 0);
+                    }
+                    tw = tw + 2;
+                } ⎉ {
+                    tw = tw + 1;
+                }
                 ti = ti + 1;
             }
         }
@@ -1377,6 +1396,21 @@ rite render_content(grid, region, text) {
     }
 }
 
+// Build dynamic status bar text
+rite build_status_text(focus, panes, mode) {
+    ≔ ptype = panes[focus].pane_type;
+    ≔ idx = to_string(focus + 1) + "/" + to_string(len(panes));
+    ≔ mut text = " Morgoth v" + VERSION + " | [" + idx + "] " + ptype;
+    ⎇ mode == "copy" {
+        text = text + " | hjkl move  Space select  / search  Enter copy  q exit";
+    } ⎉ { ⎇ mode == "search" {
+        text = text + " | type to search  Enter accept  Esc cancel";
+    } ⎉ {
+        text = text + " | c: new  x: close  z: zoom  /: search  q: quit";
+    } }
+    ↩ text
+}
+
 // Render status bar at the bottom of the grid
 rite render_status_bar(grid, text) {
     ≔ row = grid.rows - 1;
@@ -1406,7 +1440,7 @@ rite flush_dirty(grid) {
     ≔ mut last_fg = -1;
     ≔ mut last_bg = -1;
     ⟳ i < total {
-        ⎇ grid.cells[i].dirty == true {
+        ⎇ grid.cells[i].dirty == true ∧ grid.cells[i].ch != "" {
             ≔ row = i / grid.cols;
             ≔ col = i % grid.cols;
             // Only reposition cursor if not consecutive with previous cell
@@ -1415,11 +1449,23 @@ rite flush_dirty(grid) {
             }
             // Only emit color codes if they changed
             ⎇ grid.cells[i].fg != last_fg {
-                buf = buf + CSI + "38;5;" + to_string(grid.cells[i].fg) + "m";
+                ≔ fg = grid.cells[i].fg;
+                ⎇ fg >= 256 {
+                    ≔ raw_fg = fg - 256;
+                    buf = buf + CSI + "38;2;" + to_string(raw_fg / 65536) + ";" + to_string((raw_fg % 65536) / 256) + ";" + to_string(raw_fg % 256) + "m";
+                } ⎉ {
+                    buf = buf + CSI + "38;5;" + to_string(fg) + "m";
+                }
                 last_fg = grid.cells[i].fg;
             }
             ⎇ grid.cells[i].bg != last_bg {
-                buf = buf + CSI + "48;5;" + to_string(grid.cells[i].bg) + "m";
+                ≔ bg = grid.cells[i].bg;
+                ⎇ bg >= 256 {
+                    ≔ raw_bg = bg - 256;
+                    buf = buf + CSI + "48;2;" + to_string(raw_bg / 65536) + ";" + to_string((raw_bg % 65536) / 256) + ";" + to_string(raw_bg % 256) + "m";
+                } ⎉ {
+                    buf = buf + CSI + "48;5;" + to_string(bg) + "m";
+                }
                 last_bg = grid.cells[i].bg;
             }
             // Write character
@@ -1449,7 +1495,9 @@ rite extract_text_lines(vt) {
         ≔ mut line = "";
         ≔ mut ci = 0;
         ⟳ ci < len(vt.scrollback[si]) {
-            line = line + vt.scrollback[si][ci].ch;
+            ⎇ vt.scrollback[si][ci].ch != "" {
+                line = line + vt.scrollback[si][ci].ch;
+            }
             ci = ci + 1;
         }
         push(lines, line);
@@ -1462,7 +1510,7 @@ rite extract_text_lines(vt) {
         ≔ mut col = 0;
         ⟳ col < vt.cols {
             ≔ idx = row * vt.cols + col;
-            ⎇ idx < len(vt.cells) {
+            ⎇ idx < len(vt.cells) ∧ vt.cells[idx].ch != "" {
                 line = line + vt.cells[idx].ch;
             }
             col = col + 1;
@@ -2303,7 +2351,7 @@ rite main() {
         render_border(screen, panes[i].region, title);
         i = i + 1;
     }
-    render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+    render_status_bar(screen, build_status_text(focus, panes, "normal"));
     flush_dirty(screen);
 
     // Main event loop
@@ -2328,7 +2376,7 @@ rite main() {
             ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
             grid_rows = gl.grid_rows;
             grid_cols = gl.grid_cols;
-            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+            render_status_bar(screen, build_status_text(focus, panes, "normal"));
             flush_dirty(screen);
         }
 
@@ -2356,6 +2404,7 @@ rite main() {
                             render_border(screen, panes[pi].region, t);
                             pi = pi + 1;
                         }
+                        render_status_bar(screen, build_status_text(focus, panes, "normal"));
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "focus_prev" {
                         ⎇ focus == 0 {
@@ -2372,6 +2421,7 @@ rite main() {
                             render_border(screen, panes[pi].region, t);
                             pi = pi + 1;
                         }
+                        render_status_bar(screen, build_status_text(focus, panes, "normal"));
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "scroll_up" {
                         ≔ vt = panes[focus].vterm;
@@ -2415,7 +2465,7 @@ rite main() {
                             grid_rows = gl.grid_rows;
                             grid_cols = gl.grid_cols;
                             zoomed = false;
-                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            render_status_bar(screen, build_status_text(focus, panes, "normal"));
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "create_monitor" {
@@ -2428,7 +2478,7 @@ rite main() {
                             grid_rows = gl.grid_rows;
                             grid_cols = gl.grid_cols;
                             zoomed = false;
-                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            render_status_bar(screen, build_status_text(focus, panes, "normal"));
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "close_pane" {
@@ -2467,10 +2517,10 @@ rite main() {
                         grid_rows = gl.grid_rows;
                         grid_cols = gl.grid_cols;
                         zoomed = false;
-                        render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                        render_status_bar(screen, build_status_text(focus, panes, "normal"));
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "close_cancel" {
-                        render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                        render_status_bar(screen, build_status_text(focus, panes, "normal"));
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "zoom_toggle" {
                         ⎇ zoomed == true {
@@ -2480,7 +2530,7 @@ rite main() {
                             ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
                             grid_rows = gl.grid_rows;
                             grid_cols = gl.grid_cols;
-                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            render_status_bar(screen, build_status_text(focus, panes, "normal"));
                             flush_dirty(screen);
                         } ⎉ {
                             // Zoom: focused pane fills entire screen minus status bar
@@ -2496,7 +2546,7 @@ rite main() {
                             ≔ mut zt = panes[focus].title;
                             zt = "[" + zt + " (zoom)]";
                             render_border(screen, panes[focus].region, zt);
-                            render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                            render_status_bar(screen, build_status_text(focus, panes, "normal"));
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "copy_enter" {
@@ -2511,7 +2561,7 @@ rite main() {
                         cm.line_mode = false;
                         render_copy_mode(screen, panes[focus].region, cm);
                         render_border(screen, panes[focus].region, "[COPY]");
-                        render_status_bar(screen, " COPY | hjkl: move | Space: select | Enter: copy | q: exit");
+                        render_status_bar(screen, build_status_text(focus, panes, "copy"));
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "copy_render" {
                         ≔ cm = input.copy_mode;
@@ -2522,7 +2572,7 @@ rite main() {
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "copy_yank" {
                         ≔ cm = input.copy_mode;
-                        ≔ mut yank_msg = " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit";
+                        ≔ mut yank_msg = build_status_text(focus, panes, "normal");
                         ⎇ cm.selecting == true {
                             ≔ text = extract_selection(cm);
                             write_clipboard(text);
@@ -2552,7 +2602,7 @@ rite main() {
                         ≔ mut ct = panes[focus].title;
                         ct = "[" + ct + "]";
                         render_border(screen, panes[focus].region, ct);
-                        render_status_bar(screen, " Morgoth v" + VERSION + " | c: new | x: close | z: zoom | q: quit");
+                        render_status_bar(screen, build_status_text(focus, panes, "normal"));
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "save_profile" {
                         save_profile(panes);
@@ -2580,6 +2630,7 @@ rite main() {
                         render_copy_mode(screen, panes[focus].region, cm);
                         ≔ se_title = "[SEARCH] " + panes[focus].title;
                         render_border(screen, panes[focus].region, se_title);
+                        render_status_bar(screen, build_status_text(focus, panes, "search"));
                         flush_dirty(screen);
                     } } } } } } } } } } } } } } } } } } }
 

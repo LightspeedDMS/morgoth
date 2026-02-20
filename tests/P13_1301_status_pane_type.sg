@@ -1,0 +1,42 @@
+// Test: build_status_text includes the focused pane's type string
+// Spec: Phase 13 - Status Bar Enrichment
+// Priority: P13
+
+≔ VERSION = "0.1.0";
+
+rite build_status_text(focus, panes, mode) {
+    ≔ ptype = panes[focus].pane_type;
+    ≔ idx = to_string(focus + 1) + "/" + to_string(len(panes));
+    ≔ mut text = " Morgoth v" + VERSION + " | [" + idx + "] " + ptype;
+    ⎇ mode == "copy" {
+        text = text + " | hjkl move  Space select  / search  Enter copy  q exit";
+    } ⎉ { ⎇ mode == "search" {
+        text = text + " | type to search  Enter accept  Esc cancel";
+    } ⎉ {
+        text = text + " | c: new  x: close  z: zoom  /: search  q: quit";
+    } }
+    ↩ text
+}
+
+rite main() {
+    ≔ panes = [
+        { pane_type: "terminal" },
+        { pane_type: "monitor" }
+    ];
+
+    // Test 1: focus on terminal pane
+    ≔ t1 = build_status_text(0, panes, "normal");
+    ⎇ contains(t1, "terminal") {
+        println("type_terminal: OK");
+    } ⎉ {
+        println("type_terminal: FAILED got=" + t1);
+    }
+
+    // Test 2: focus on monitor pane
+    ≔ t2 = build_status_text(1, panes, "normal");
+    ⎇ contains(t2, "monitor") {
+        println("type_monitor: OK");
+    } ⎉ {
+        println("type_monitor: FAILED got=" + t2);
+    }
+}

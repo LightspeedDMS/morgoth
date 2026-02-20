@@ -1,0 +1,230 @@
+// Test: Adjacent cells with palette + true color store distinct values
+// Spec: Phase 11 - True Color Support
+// Priority: P11
+
+rite VTerm_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, {ch: " ", fg: 7, bg: 0});
+        i = i + 1;
+    }
+    ↩ {
+        cells: cells, rows: rows, cols: cols,
+        cursor_row: 0, cursor_col: 0,
+        attr_fg: 7, attr_bg: 0,
+        esc_state: "normal", esc_buf: "",
+        scroll_top: 0, scroll_bottom: rows - 1,
+        saved_row: 0, saved_col: 0,
+        scrollback: [], scrollback_max: 1000, scroll_offset: 0,
+        alt_cells: [], alt_cursor_row: 0, alt_cursor_col: 0,
+        alt_attr_fg: 7, alt_attr_bg: 0,
+        in_alt_screen: false, cursor_visible: true,
+        app_cursor_keys: false, auto_wrap: true,
+        bracketed_paste: false, mouse_mode: 0,
+        mouse_sgr: false, origin_mode: false, title: ""
+    }
+}
+
+rite vterm_put_char(vt, ch) {
+    ⎇ vt.cursor_col >= vt.cols {
+        ⎇ vt.auto_wrap == true {
+            vt.cursor_col = 0;
+            vt.cursor_row = vt.cursor_row + 1;
+        } ⎉ {
+            vt.cursor_col = vt.cols - 1;
+        }
+    }
+    ≔ idx = vt.cursor_row * vt.cols + vt.cursor_col;
+    ⎇ idx >= 0 ∧ idx < len(vt.cells) {
+        vt.cells[idx] = {ch: ch, fg: vt.attr_fg, bg: vt.attr_bg};
+    }
+    vt.cursor_col = vt.cursor_col + 1;
+}
+
+rite vterm_scroll_up(vt) {
+    ≔ mut row = vt.scroll_top;
+    ⟳ row < vt.scroll_bottom {
+        ≔ mut col = 0;
+        ⟳ col < vt.cols {
+            ≔ dst = row * vt.cols + col;
+            ≔ src = (row + 1) * vt.cols + col;
+            vt.cells[dst] = vt.cells[src];
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    ≔ mut col = 0;
+    ⟳ col < vt.cols {
+        ≔ idx = vt.scroll_bottom * vt.cols + col;
+        vt.cells[idx] = {ch: " ", fg: 7, bg: 0};
+        col = col + 1;
+    }
+}
+
+rite vterm_parse_params(buf) {
+    ≔ mut params = [];
+    ⎇ buf != "" {
+        ≔ parts = split(buf, ";");
+        ≔ mut i = 0;
+        ⟳ i < len(parts) {
+            ⎇ parts[i] == "" { push(params, 0); } ⎉ { push(params, to_int(parts[i])); }
+            i = i + 1;
+        }
+    }
+    params
+}
+
+rite vterm_csi_dispatch(vt, cmd, buf) {
+    ≔ params = vterm_parse_params(buf);
+
+    ⎇ cmd == "m" {
+        ⎇ len(params) == 0 {
+            vt.attr_fg = 7;
+            vt.attr_bg = 0;
+        } ⎉ {
+            ≔ mut pi = 0;
+            ⟳ pi < len(params) {
+                ≔ p = params[pi];
+                ⎇ p == 0 { vt.attr_fg = 7; vt.attr_bg = 0; }
+                ⎇ p >= 30 ∧ p <= 37 { vt.attr_fg = p - 30; }
+                ⎇ p >= 40 ∧ p <= 47 { vt.attr_bg = p - 40; }
+                ⎇ p == 39 { vt.attr_fg = 7; }
+                ⎇ p == 49 { vt.attr_bg = 0; }
+                ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 5 ∧ pi + 2 < len(params) {
+                    vt.attr_fg = params[pi + 2];
+                    pi = pi + 2;
+                }
+                ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 5 ∧ pi + 2 < len(params) {
+                    vt.attr_bg = params[pi + 2];
+                    pi = pi + 2;
+                }
+                ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
+                    vt.attr_fg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
+                    pi = pi + 4;
+                }
+                ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
+                    vt.attr_bg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
+                    pi = pi + 4;
+                }
+                pi = pi + 1;
+            }
+        }
+    }
+}
+
+rite vterm_feed(vt, data) {
+    ≔ mut i = 0;
+    ⟳ i < len(data) {
+        ≔ ch = to_string(char_at(data, i));
+        ≔ code = char_code_at(data, i);
+
+        ⎇ vt.esc_state == "csi" {
+            ⎇ (code >= 64 ∧ code <= 90) ∨ (code >= 97 ∧ code <= 122) {
+                vterm_csi_dispatch(vt, ch, vt.esc_buf);
+                vt.esc_state = "normal";
+                vt.esc_buf = "";
+            } ⎉ {
+                vt.esc_buf = vt.esc_buf + ch;
+            }
+        } ⎉ {
+            ⎇ vt.esc_state == "escape" {
+                ⎇ ch == "[" { vt.esc_state = "csi"; vt.esc_buf = ""; }
+                ⎉ { vt.esc_state = "normal"; }
+            } ⎉ {
+                ⎇ code == 27 { vt.esc_state = "escape"; vt.esc_buf = ""; }
+                ⎇ code == 13 { vt.cursor_col = 0; }
+                ⎇ code == 10 {
+                    vt.cursor_col = 0;
+                    vt.cursor_row = vt.cursor_row + 1;
+                    ⎇ vt.cursor_row > vt.scroll_bottom {
+                        vterm_scroll_up(vt);
+                        vt.cursor_row = vt.scroll_bottom;
+                    }
+                }
+                ⎇ code >= 32 { vterm_put_char(vt, ch); }
+            }
+        }
+
+        i = i + 1;
+    }
+}
+
+rite main() {
+    ≔ vt = VTerm_new(4, 10);
+
+    // Cell 0: palette fg 196
+    vterm_feed(vt, "\x1b[38;5;196m");
+    vterm_feed(vt, "P");
+
+    // Cell 1: true color fg green (0,255,0)
+    vterm_feed(vt, "\x1b[38;2;0;255;0m");
+    vterm_feed(vt, "T");
+
+    // Cell 2: basic SGR fg red (31 = color 1)
+    vterm_feed(vt, "\x1b[31m");
+    vterm_feed(vt, "B");
+
+    // Test 1: cell 0 has palette fg 196
+    ⎇ vt.cells[0].fg == 196 {
+        println("cell0_palette_196: OK");
+    } ⎉ {
+        println("cell0_palette_196: FAILED got=" + to_string(vt.cells[0].fg));
+    }
+
+    // Test 2: cell 0 is in palette range
+    ⎇ vt.cells[0].fg < 256 {
+        println("cell0_is_palette: OK");
+    } ⎉ {
+        println("cell0_is_palette: FAILED fg=" + to_string(vt.cells[0].fg));
+    }
+
+    // Test 3: cell 1 has true color green
+    // Expected: 256 + 0*65536 + 255*256 + 0 = 256 + 0 + 65280 + 0 = 65536
+    ≔ expected_green = 256 + 0 * 65536 + 255 * 256 + 0;
+    ⎇ vt.cells[1].fg == expected_green {
+        println("cell1_truecolor_green: OK");
+    } ⎉ {
+        println("cell1_truecolor_green: FAILED expected=" + to_string(expected_green) + " got=" + to_string(vt.cells[1].fg));
+    }
+
+    // Test 4: cell 1 is in true color range
+    ⎇ vt.cells[1].fg >= 256 {
+        println("cell1_is_truecolor: OK");
+    } ⎉ {
+        println("cell1_is_truecolor: FAILED fg=" + to_string(vt.cells[1].fg));
+    }
+
+    // Test 5: decode cell 1 — R=0, G=255, B=0
+    ≔ raw = vt.cells[1].fg - 256;
+    ≔ r = raw / 65536;
+    ≔ g = (raw % 65536) / 256;
+    ≔ b = raw % 256;
+    ⎇ r == 0 ∧ g == 255 ∧ b == 0 {
+        println("cell1_decode_rgb: OK");
+    } ⎉ {
+        println("cell1_decode_rgb: FAILED r=" + to_string(r) + " g=" + to_string(g) + " b=" + to_string(b));
+    }
+
+    // Test 6: cell 2 has basic SGR fg (31 → color 1)
+    ⎇ vt.cells[2].fg == 1 {
+        println("cell2_basic_red: OK");
+    } ⎉ {
+        println("cell2_basic_red: FAILED got=" + to_string(vt.cells[2].fg));
+    }
+
+    // Test 7: all three cells have different fg values
+    ⎇ vt.cells[0].fg != vt.cells[1].fg ∧ vt.cells[1].fg != vt.cells[2].fg ∧ vt.cells[0].fg != vt.cells[2].fg {
+        println("all_distinct: OK");
+    } ⎉ {
+        println("all_distinct: FAILED");
+    }
+
+    // Test 8: all three cells have correct characters
+    ⎇ vt.cells[0].ch == "P" ∧ vt.cells[1].ch == "T" ∧ vt.cells[2].ch == "B" {
+        println("cell_chars: OK");
+    } ⎉ {
+        println("cell_chars: FAILED c0=" + vt.cells[0].ch + " c1=" + vt.cells[1].ch + " c2=" + vt.cells[2].ch);
+    }
+}

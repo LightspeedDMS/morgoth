@@ -1,0 +1,160 @@
+// Test: Fullwidth character at end of line wraps to next line
+// Spec: Phase 12 - Unicode Width Handling
+// Priority: P12
+//
+// Purpose:
+// When a fullwidth character would start at the last column (cols-1),
+// it cannot fit (needs 2 cells). The cursor wraps early to the next line,
+// leaving the last column as a space. The fullwidth char is placed at
+// column 0 of the new row.
+
+rite VTerm_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, {ch: " ", fg: 7, bg: 0});
+        i = i + 1;
+    }
+    ↩ {
+        cells: cells, rows: rows, cols: cols,
+        cursor_row: 0, cursor_col: 0,
+        attr_fg: 7, attr_bg: 0,
+        esc_state: "normal", esc_buf: "",
+        scroll_top: 0, scroll_bottom: rows - 1,
+        saved_row: 0, saved_col: 0,
+        scrollback: [], scrollback_max: 1000, scroll_offset: 0,
+        alt_cells: [], alt_cursor_row: 0, alt_cursor_col: 0,
+        alt_attr_fg: 7, alt_attr_bg: 0,
+        in_alt_screen: false, cursor_visible: true,
+        app_cursor_keys: false, auto_wrap: true,
+        bracketed_paste: false, mouse_mode: 0,
+        mouse_sgr: false, origin_mode: false, title: ""
+    }
+}
+
+rite vterm_scroll_up(vt) {
+    ≔ mut row = vt.scroll_top;
+    ⟳ row < vt.scroll_bottom {
+        ≔ mut col = 0;
+        ⟳ col < vt.cols {
+            vt.cells[row * vt.cols + col] = vt.cells[(row + 1) * vt.cols + col];
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    ≔ mut col = 0;
+    ⟳ col < vt.cols {
+        vt.cells[vt.scroll_bottom * vt.cols + col] = {ch: " ", fg: 7, bg: 0};
+        col = col + 1;
+    }
+}
+
+rite vterm_put_char(vt, ch) {
+    // Fullwidth char at last column: wrap early
+    ⎇ is_fullwidth(ch) == true ∧ vt.cursor_col == vt.cols - 1 ∧ vt.auto_wrap == true {
+        vt.cursor_col = vt.cols;
+    }
+    // Handle line wrap
+    ⎇ vt.cursor_col >= vt.cols {
+        ⎇ vt.auto_wrap == true {
+            vt.cursor_col = 0;
+            vt.cursor_row = vt.cursor_row + 1;
+            ⎇ vt.cursor_row > vt.scroll_bottom {
+                vterm_scroll_up(vt);
+                vt.cursor_row = vt.scroll_bottom;
+            }
+        } ⎉ {
+            vt.cursor_col = vt.cols - 1;
+        }
+    }
+    ≔ idx = vt.cursor_row * vt.cols + vt.cursor_col;
+    ⎇ idx >= 0 ∧ idx < len(vt.cells) {
+        vt.cells[idx] = {ch: ch, fg: vt.attr_fg, bg: vt.attr_bg};
+    }
+    ⎇ is_fullwidth(ch) == true {
+        ≔ idx2 = vt.cursor_row * vt.cols + vt.cursor_col + 1;
+        ⎇ idx2 >= 0 ∧ idx2 < len(vt.cells) {
+            vt.cells[idx2] = {ch: "", fg: vt.attr_fg, bg: vt.attr_bg};
+        }
+        vt.cursor_col = vt.cursor_col + 2;
+    } ⎉ {
+        vt.cursor_col = vt.cursor_col + 1;
+    }
+}
+
+rite vterm_feed(vt, data) {
+    ≔ mut i = 0;
+    ⟳ i < len(data) {
+        ≔ ch = to_string(char_at(data, i));
+        ≔ code = char_code_at(data, i);
+
+        ⎇ vt.esc_state == "csi" {
+            ⎇ (code >= 64 ∧ code <= 90) ∨ (code >= 97 ∧ code <= 122) {
+                vt.esc_state = "normal";
+                vt.esc_buf = "";
+            } ⎉ {
+                vt.esc_buf = vt.esc_buf + ch;
+            }
+        } ⎉ {
+            ⎇ vt.esc_state == "escape" {
+                ⎇ ch == "[" { vt.esc_state = "csi"; vt.esc_buf = ""; }
+                ⎉ { vt.esc_state = "normal"; }
+            } ⎉ {
+                ⎇ code == 27 { vt.esc_state = "escape"; vt.esc_buf = ""; }
+                ⎇ code == 13 { vt.cursor_col = 0; }
+                ⎇ code == 10 {
+                    vt.cursor_row = vt.cursor_row + 1;
+                    vt.cursor_col = 0;
+                    ⎇ vt.cursor_row > vt.scroll_bottom {
+                        vterm_scroll_up(vt);
+                        vt.cursor_row = vt.scroll_bottom;
+                    }
+                }
+                ⎇ code >= 32 { vterm_put_char(vt, ch); }
+            }
+        }
+
+        i = i + 1;
+    }
+    vt.scroll_offset = 0;
+}
+
+rite main() {
+    // 3 rows, 5 columns
+    ≔ vt = VTerm_new(3, 5);
+
+    // Feed "ABCD" — fills cols 0-3, cursor at col 4 (= cols-1)
+    vterm_feed(vt, "ABCD");
+
+    // Feed "中" — fullwidth at col 4 (last col), should wrap early
+    vterm_feed(vt, "中");
+
+    // Test 1: Last column of row 0 should be space (untouched, early wrap skipped it)
+    ⎇ vt.cells[4].ch == " " {
+        println("last_col_space: OK");
+    } ⎉ {
+        println("last_col_space: FAILED ch=" + vt.cells[4].ch);
+    }
+
+    // Test 2: Fullwidth char wrapped to row 1, col 0
+    ⎇ vt.cells[5].ch == "中" {
+        println("wrapped_char: OK");
+    } ⎉ {
+        println("wrapped_char: FAILED ch=" + vt.cells[5].ch);
+    }
+
+    // Test 3: Placeholder at row 1, col 1
+    ⎇ vt.cells[6].ch == "" {
+        println("wrapped_placeholder: OK");
+    } ⎉ {
+        println("wrapped_placeholder: FAILED ch=" + vt.cells[6].ch);
+    }
+
+    // Test 4: Cursor should be at row 1, col 2
+    ⎇ vt.cursor_row == 1 ∧ vt.cursor_col == 2 {
+        println("cursor_position: OK");
+    } ⎉ {
+        println("cursor_position: FAILED row=" + to_string(vt.cursor_row) + " col=" + to_string(vt.cursor_col));
+    }
+}
