@@ -1,0 +1,63 @@
+// P15_1542: Mouse click forwarding to child PTY
+
+rite parse_sgr_mouse(buf) {
+    // Parse SGR mouse: [<btn;col;rowM or [<btn;col;rowm
+    // buf format: "[<btn;col;rowM"
+    // Strip leading "[<" and trailing M/m
+    ≔ body = substring(buf, 2, len(buf) - 1);
+    ≔ mut parts = [];
+    ≔ mut current = "";
+    ≔ mut i = 0;
+    ⟳ i < len(body) {
+        ≔ ch = to_string(char_at(body, i));
+        ⎇ ch == ";" {
+            push(parts, current);
+            current = "";
+        } ⎉ {
+            current = current + ch;
+        }
+        i = i + 1;
+    }
+    push(parts, current);
+
+    ⎇ len(parts) >= 3 {
+        ↩ {btn: parts[0], col: parts[1], row: parts[2]}
+    }
+    ↩ {btn: "0", col: "1", row: "1"}
+}
+
+rite main() {
+    // Test 1: Parse SGR mouse format
+    ≔ m = parse_sgr_mouse("[<0;15;8M");
+    ⎇ m.btn == "0" ∧ m.col == "15" ∧ m.row == "8" {
+        println("sgr_parse: OK");
+    } ⎉ {
+        println("sgr_parse: FAILED btn=" + m.btn + " col=" + m.col + " row=" + m.row);
+    }
+
+    // Test 2: Compute interior coordinates for forwarding
+    // Pane at region (5, 3, 40, 12) — interior starts at (6, 4)
+    ≔ region = {x: 5, y: 3, w: 40, h: 12};
+    ≔ mouse_col = 15;
+    ≔ mouse_row = 8;
+
+    // Check if click is inside interior (not on border)
+    ≔ inner_col = mouse_col - region.x - 1;
+    ≔ inner_row = mouse_row - region.y - 1;
+    ≔ is_interior = inner_col >= 0 ∧ inner_col < region.w - 2 ∧ inner_row >= 0 ∧ inner_row < region.h - 2;
+
+    ⎇ is_interior == true {
+        println("interior_check: OK");
+    } ⎉ {
+        println("interior_check: FAILED col=" + to_string(inner_col) + " row=" + to_string(inner_row));
+    }
+
+    // Test 3: Forward coordinates are 1-based for the child PTY
+    ≔ fwd_col = inner_col + 1;
+    ≔ fwd_row = inner_row + 1;
+    ⎇ fwd_col == 10 ∧ fwd_row == 5 {
+        println("forward_coords: OK");
+    } ⎉ {
+        println("forward_coords: FAILED col=" + to_string(fwd_col) + " row=" + to_string(fwd_row));
+    }
+}

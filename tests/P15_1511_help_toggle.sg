@@ -1,0 +1,89 @@
+// P15_1511: Help toggle via Ctrl-B ?
+≔ LEADER_KEY = 2;
+
+rite CopyModeState_new() {
+    ↩ {active: false, search_active: false}
+}
+
+rite InputState_new() {
+    ↩ {
+        leader_active: false,
+        mouse_mode: true,
+        escape_buf: "",
+        in_escape: false,
+        last_escape_buf: "",
+        confirming_close: false,
+        confirming_quit: false,
+        showing_help: false,
+        leader_key: 2,
+        copy_mode: CopyModeState_new()
+    }
+}
+
+rite process_input(input_state, byte, pane_count) {
+    ⎇ input_state.copy_mode.active == true { ↩ "none" }
+    ⎇ input_state.confirming_quit == true {
+        input_state.confirming_quit = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "quit_confirm" }
+        ↩ "quit_cancel"
+    }
+    ⎇ input_state.confirming_close == true {
+        input_state.confirming_close = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "close_confirm" }
+        ↩ "close_cancel"
+    }
+    ⎇ input_state.showing_help == true {
+        input_state.showing_help = false;
+        ↩ "help_dismiss"
+    }
+
+    ≔ mut action = "passthrough";
+    ⎇ input_state.in_escape == true {
+        input_state.in_escape = false;
+        action = "none";
+    } ⎉ {
+        ⎇ byte == 27 {
+            input_state.in_escape = true;
+            action = "none";
+        } ⎉ {
+            ⎇ input_state.leader_active == true {
+                input_state.leader_active = false;
+                action = "none";
+                ⎇ byte == 63 { action = "help_toggle"; }
+            } ⎉ {
+                ⎇ byte == input_state.leader_key {
+                    input_state.leader_active = true;
+                    action = "leader_activate";
+                }
+            }
+        }
+    }
+    action
+}
+
+rite main() {
+    ≔ input = InputState_new();
+
+    // Test 1: Ctrl-B ? → help_toggle
+    input.leader_active = true;
+    ≔ r1 = process_input(input, 63, 2);
+    ⎇ r1 == "help_toggle" {
+        println("help_toggle: OK");
+    } ⎉ {
+        println("help_toggle: FAILED got=" + r1);
+    }
+
+    // Test 2: After showing_help=true, any key dismisses
+    input.showing_help = true;
+    ≔ r2 = process_input(input, 32, 2);
+    ⎇ r2 == "help_dismiss" {
+        println("help_dismiss: OK");
+    } ⎉ {
+        println("help_dismiss: FAILED got=" + r2);
+    }
+    ⎇ input.showing_help == false {
+        println("help_cleared: OK");
+    } ⎉ {
+        println("help_cleared: FAILED");
+    }
+}

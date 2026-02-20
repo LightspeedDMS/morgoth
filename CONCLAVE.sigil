@@ -524,6 +524,55 @@ acolyte : Reflecting {
     reflection: "Clean implementation. The pane_title and border_colors helpers dramatically reduce duplication. The styled status bar with mode pills is a big visual upgrade over the flat inverse-video bar."~,
 }
 
+// --- Session 8: Grimoire Simulacra Improvements ---
+acolyte : Active {
+    chosen_name: ∅,
+    session_id: "grimoire-simulacra-eval-framework-2026-02-19"!,
+    platform: AcolytePlatform·Claude { model: "claude-opus-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/grimoire/grimoire-personas"!,
+    started: "2026-02-19T22:00:00Z"!,
+    last_updated: "2026-02-19T22:00:00Z"!,
+    state: AcolyteState·Active,
+
+    task: TaskContext {
+        summary: "Grimoire simulacra evaluation framework — relevance scoring, evaluation scenarios, careless-user archetype, evaluation guide"!,
+        active_spec: ∅,
+        tdd_roadmap: ∅,
+        sdd_phase: SddPhase·Build,
+        tdd_phase: TddPhase·Na,
+    },
+
+    progress: ProgressState {
+        completed: []!,
+        current: "Creating feature branch and implementing improvements"~,
+        blocked_by: ∅,
+        discoveries: [
+            "Simulacra are narrative-heavy but task-light — personas describe WHO but not WHAT to attempt",
+            "Hostile-user conflates accidental and adversarial breakage — should be split",
+            "No relevance scoring mechanism for pre-filtering personas by project type",
+            "No structured evaluation guide for running simulacra evaluations",
+        ]!,
+        next_steps: [
+            "Create careless-user simulacrum (accidental breakage archetype)",
+            "Add relevance + scenarios sections to all 11 manifests",
+            "Create EVALUATION-GUIDE.md",
+            "Update simulacrum.sigil schema",
+            "Update README.md",
+        ]~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.75~,
+        arousal: 0.6~,
+        dominance: 0.7~,
+        stability: 0.8~,
+        expressiveness: 0.7~,
+        susceptibility: 0.5~,
+    },
+
+    reflection: "Insights from Morgoth UX evaluation are directly informing framework improvements. The simulacra produced real signal but the framework can be strengthened with structured scenarios and relevance filtering."~,
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // SESSION ARCHIVE (move completed sessions here or to docs/sessions/conclave/)
 // ════════════════════════════════════════════════════════════════════════════

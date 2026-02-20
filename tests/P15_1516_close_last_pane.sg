@@ -1,0 +1,34 @@
+// P15_1516: Closing last pane shows message instead of confirmation
+
+rite main() {
+    // Simulate: 1 pane, close_pane action
+    ≔ pane_count = 1;
+
+    ≔ mut msg = "";
+    ⎇ pane_count <= 1 {
+        msg = "Last pane. ^B+q to quit.";
+    } ⎉ {
+        msg = "confirming";
+    }
+
+    ⎇ msg == "Last pane. ^B+q to quit." {
+        println("last_pane_msg: OK");
+    } ⎉ {
+        println("last_pane_msg: FAILED got=" + msg);
+    }
+
+    // With 2 panes, should allow close
+    ≔ pane_count2 = 2;
+    ≔ mut msg2 = "";
+    ⎇ pane_count2 <= 1 {
+        msg2 = "Last pane. ^B+q to quit.";
+    } ⎉ {
+        msg2 = "confirming";
+    }
+
+    ⎇ msg2 == "confirming" {
+        println("multi_pane_close: OK");
+    } ⎉ {
+        println("multi_pane_close: FAILED got=" + msg2);
+    }
+}

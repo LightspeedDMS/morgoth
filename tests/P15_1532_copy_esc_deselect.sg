@@ -1,0 +1,64 @@
+// P15_1532: Copy mode ESC with selecting=true → deselects, stays in copy mode
+
+rite CopyModeState_new() {
+    ↩ {
+        active: true,
+        cursor_row: 5,
+        cursor_col: 10,
+        viewport_row: 0,
+        selecting: true,
+        select_start_row: 3,
+        select_start_col: 0,
+        line_mode: false,
+        text_lines: [],
+        search_active: false,
+        search_query: "",
+        search_matches: [],
+        search_current: -1,
+        search_saved_row: 0,
+        search_saved_col: 0,
+        search_saved_viewport: 0
+    }
+}
+
+rite process_copy_mode(cm, byte) {
+    ⎇ cm.search_active == true { ↩ "none" }
+
+    ⎇ byte == 27 {
+        ⎇ cm.selecting == true {
+            cm.selecting = false;
+            ↩ "copy_render"
+        }
+        ↩ "copy_exit"
+    }
+    ⎇ byte == 113 { ↩ "copy_exit" }
+    ↩ "none"
+}
+
+rite main() {
+    ≔ cm = CopyModeState_new();
+    cm.selecting = true;
+
+    // Test 1: ESC while selecting → deselects, stays in copy mode
+    ≔ r1 = process_copy_mode(cm, 27);
+    ⎇ r1 == "copy_render" ∧ cm.selecting == false {
+        println("esc_deselects: OK");
+    } ⎉ {
+        println("esc_deselects: FAILED action=" + r1 + " selecting=" + to_string(cm.selecting));
+    }
+
+    // Test 2: cm.active should still be true (we returned copy_render, not copy_exit)
+    ⎇ cm.active == true {
+        println("stays_active: OK");
+    } ⎉ {
+        println("stays_active: FAILED");
+    }
+
+    // Test 3: Second ESC (selecting=false) → copy_exit
+    ≔ r2 = process_copy_mode(cm, 27);
+    ⎇ r2 == "copy_exit" {
+        println("second_esc_exits: OK");
+    } ⎉ {
+        println("second_esc_exits: FAILED action=" + r2);
+    }
+}

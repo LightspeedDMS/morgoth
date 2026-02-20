@@ -1,0 +1,40 @@
+// P15_1506: Profile with 20 panes + max_panes=12 → clamped to 12
+
+rite load_profile_clamped(pane_list, max_panes) {
+    ≔ mut result = [];
+    ≔ mut i = 0;
+    ⟳ i < len(pane_list) ∧ i < max_panes {
+        push(result, pane_list[i]);
+        i = i + 1;
+    }
+    ↩ result
+}
+
+rite main() {
+    // Build a list of 20 pane types
+    ≔ mut big_list = [];
+    ≔ mut i = 0;
+    ⟳ i < 20 {
+        push(big_list, "terminal");
+        i = i + 1;
+    }
+
+    // Clamp to 12
+    ≔ clamped = load_profile_clamped(big_list, 12);
+    ⎇ len(clamped) == 12 {
+        println("clamped_to_max: OK");
+    } ⎉ {
+        println("clamped_to_max: FAILED len=" + to_string(len(clamped)));
+    }
+
+    // Test: small list stays unchanged
+    ≔ mut small_list = [];
+    push(small_list, "terminal");
+    push(small_list, "monitor");
+    ≔ small_result = load_profile_clamped(small_list, 12);
+    ⎇ len(small_result) == 2 {
+        println("small_unchanged: OK");
+    } ⎉ {
+        println("small_unchanged: FAILED len=" + to_string(len(small_result)));
+    }
+}

@@ -1,0 +1,94 @@
+// P15_1507: vterm_feed normal state ESC then CR — CR does NOT fire
+// Tests that the ⎇/⎉ chain in normal state prevents fall-through
+
+rite VTerm_new() {
+    ↩ {
+        esc_state: "normal",
+        esc_buf: "",
+        cursor_row: 5,
+        cursor_col: 10,
+        cols: 80,
+        rows: 24,
+        scroll_top: 0,
+        scroll_bottom: 23,
+        scrollback: [],
+        cells: [],
+        fg: 7,
+        bg: 0,
+        in_alt_screen: false,
+        saved_row: 0,
+        saved_col: 0,
+        title: "",
+        scroll_offset: 0
+    }
+}
+
+rite vterm_scroll_up(vt) { }
+rite vterm_put_char(vt, ch) { vt.cursor_col = vt.cursor_col + 1; }
+
+// Process a single byte through vterm state machine (⎇/⎉ chain version)
+rite vterm_feed_byte(vt, code) {
+    ⎇ vt.esc_state == "csi" {
+        ⎇ (code >= 64 ∧ code <= 90) ∨ (code >= 97 ∧ code <= 122) {
+            vt.esc_state = "normal";
+            vt.esc_buf = "";
+        } ⎉ {
+            vt.esc_buf = vt.esc_buf + from_char_code(code);
+        }
+    } ⎉ { ⎇ vt.esc_state == "escape" {
+        ⎇ code == 91 {
+            // '[' → CSI
+            vt.esc_state = "csi";
+            vt.esc_buf = "";
+        } ⎉ {
+            vt.esc_state = "normal";
+        }
+    } ⎉ {
+        // Normal state — ⎇/⎉ chain so only ONE fires
+        ⎇ code == 27 {
+            vt.esc_state = "escape";
+            vt.esc_buf = "";
+        } ⎉ { ⎇ code == 13 {
+            vt.cursor_col = 0;
+        } ⎉ { ⎇ code == 10 {
+            vt.cursor_col = 0;
+            vt.cursor_row = vt.cursor_row + 1;
+            ⎇ vt.cursor_row > vt.scroll_bottom {
+                vterm_scroll_up(vt);
+                vt.cursor_row = vt.scroll_bottom;
+            }
+        } ⎉ { ⎇ code == 8 {
+            ⎇ vt.cursor_col > 0 { vt.cursor_col = vt.cursor_col - 1; }
+        } ⎉ { ⎇ code == 9 {
+            vt.cursor_col = ((vt.cursor_col / 8) + 1) * 8;
+            ⎇ vt.cursor_col >= vt.cols { vt.cursor_col = vt.cols - 1; }
+        } ⎉ { ⎇ code >= 32 {
+            vterm_put_char(vt, from_char_code(code));
+        } } } } } }
+    } }
+}
+
+rite main() {
+    ≔ vt = VTerm_new();
+    vt.cursor_col = 10;
+
+    // Feed ESC (27) — enters escape state
+    // Then CR (13) — in escape state, 13 is not '[' (91), so escape handler's
+    // else branch fires → reset to normal. Cursor_col stays at 10.
+    vterm_feed_byte(vt, 27);
+    vterm_feed_byte(vt, 13);
+
+    // cursor_col should still be 10
+    ⎇ vt.cursor_col == 10 {
+        println("esc_then_cr_no_reset: OK");
+    } ⎉ {
+        println("esc_then_cr_no_reset: FAILED col=" + to_string(vt.cursor_col));
+    }
+
+    // Verify we're back in normal state
+    ⎇ vt.esc_state == "normal" {
+        println("back_to_normal: OK");
+    } ⎉ {
+        println("back_to_normal: FAILED state=" + vt.esc_state);
+    }
+}

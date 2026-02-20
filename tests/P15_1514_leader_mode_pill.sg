@@ -1,0 +1,78 @@
+// P15_1514: Leader mode displays blue pill in status bar
+≔ VERSION = "0.1.0";
+
+rite Cell_new(ch, fg, bg, dirty) {
+    ↩ {ch: ch, fg: fg, bg: bg, dirty: dirty}
+}
+
+rite Grid_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, Cell_new(" ", 7, 0, true));
+        i = i + 1;
+    }
+    ↩ {rows: rows, cols: cols, cells: cells}
+}
+
+rite Grid_set(grid, row, col, ch, fg, bg) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        grid.cells[idx] = Cell_new(ch, fg, bg, true);
+    }
+}
+
+rite Grid_get(grid, row, col) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        ↩ grid.cells[idx]
+    }
+    ↩ Cell_new(" ", 7, 0, false)
+}
+
+rite render_status_bar_styled(grid, focus, panes, mode) {
+    ≔ row = grid.rows - 1;
+    ≔ mut col = 0;
+    ⟳ col < grid.cols {
+        Grid_set(grid, row, col, " ", 7, 0);
+        col = col + 1;
+    }
+    col = 0;
+
+    ≔ mut pill = " NORMAL ";
+    ≔ mut pill_bg = 2;
+    ⎇ mode == "copy" { pill = " COPY "; pill_bg = 3; }
+    ⎇ mode == "search" { pill = " SEARCH "; pill_bg = 5; }
+    ⎇ mode == "confirm" { pill = " CONFIRM "; pill_bg = 1; }
+    ⎇ mode == "leader" { pill = " LEADER "; pill_bg = 4; }
+
+    ≔ mut pi = 0;
+    ⟳ pi < len(pill) ∧ col < grid.cols {
+        Grid_set(grid, row, col, to_string(char_at(pill, pi)), 0, pill_bg);
+        col = col + 1;
+        pi = pi + 1;
+    }
+}
+
+rite main() {
+    ≔ grid = Grid_new(2, 40);
+    ≔ panes = [{pane_type: "terminal"}];
+
+    render_status_bar_styled(grid, 0, panes, "leader");
+
+    // The pill should be " LEADER " with bg=4 (blue)
+    ≔ cell = Grid_get(grid, 1, 1);
+    ⎇ cell.ch == "L" ∧ cell.bg == 4 {
+        println("leader_pill_blue: OK");
+    } ⎉ {
+        println("leader_pill_blue: FAILED ch=" + cell.ch + " bg=" + to_string(cell.bg));
+    }
+
+    // fg should be 0 (black text on blue bg)
+    ⎇ cell.fg == 0 {
+        println("leader_pill_fg: OK");
+    } ⎉ {
+        println("leader_pill_fg: FAILED fg=" + to_string(cell.fg));
+    }
+}

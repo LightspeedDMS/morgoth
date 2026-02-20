@@ -1,0 +1,35 @@
+// P15_1530: Unfocused border color contrast — fg=7 not 8
+
+rite border_colors(pane_type, is_focused) {
+    ⎇ pane_type == "monitor" {
+        ⎇ is_focused == true { ↩ {border_fg: 13, title_fg: 15} }
+        ↩ {border_fg: 5, title_fg: 5}
+    }
+    ⎇ is_focused == true { ↩ {border_fg: 14, title_fg: 15} }
+    ↩ {border_fg: 7, title_fg: 7}
+}
+
+rite main() {
+    // Test 1: Unfocused terminal border_fg should be 7 (white)
+    ≔ c = border_colors("terminal", false);
+    ⎇ c.border_fg == 7 {
+        println("unfocused_border_fg: OK");
+    } ⎉ {
+        println("unfocused_border_fg: FAILED got=" + to_string(c.border_fg));
+    }
+
+    // Test 2: Unfocused terminal title_fg should be 7
+    ⎇ c.title_fg == 7 {
+        println("unfocused_title_fg: OK");
+    } ⎉ {
+        println("unfocused_title_fg: FAILED got=" + to_string(c.title_fg));
+    }
+
+    // Test 3: Focused terminal still uses 14/15
+    ≔ cf = border_colors("terminal", true);
+    ⎇ cf.border_fg == 14 ∧ cf.title_fg == 15 {
+        println("focused_unchanged: OK");
+    } ⎉ {
+        println("focused_unchanged: FAILED border=" + to_string(cf.border_fg) + " title=" + to_string(cf.title_fg));
+    }
+}

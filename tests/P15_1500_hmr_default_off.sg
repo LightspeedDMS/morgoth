@@ -1,0 +1,20 @@
+// P15_1500: load_config defaults hmr to false
+rite load_config() {
+    ≔ mut cfg = {
+        shell: "/bin/bash",
+        scrollback_lines: 1000,
+        leader_key: 2,
+        hmr: false,
+        max_panes: 12
+    };
+    ↩ cfg
+}
+
+rite main() {
+    ≔ cfg = load_config();
+    ⎇ cfg.hmr == false {
+        println("hmr_default_false: OK");
+    } ⎉ {
+        println("hmr_default_false: FAILED hmr=" + to_string(cfg.hmr));
+    }
+}

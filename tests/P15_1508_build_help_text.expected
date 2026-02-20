@@ -1,0 +1,6 @@
+has_header: OK
+has_next_pane: OK
+has_quit: OK
+has_search: OK
+has_help: OK
+has_passthrough: OK

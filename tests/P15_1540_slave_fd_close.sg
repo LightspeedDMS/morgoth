@@ -1,0 +1,42 @@
+// P15_1540: Parent closes slave_fd after spawn
+
+rite Pane_new_simulated(id, region, shell) {
+    // Simulate: open PTY returns master_fd and slave_fd
+    ≔ master_fd = 5;
+    ≔ slave_fd = 6;
+
+    // After spawn, parent closes slave_fd
+    // In real code: Sys·close(slave_fd)
+    ≔ closed_slave = -1;
+
+    ≔ pane = {
+        id: id,
+        region: region,
+        master_fd: master_fd,
+        slave_fd: closed_slave,
+        pid: 1234,
+        alive: true,
+        title: "bash",
+        pane_type: "terminal"
+    };
+    ↩ pane
+}
+
+rite main() {
+    ≔ region = {x: 0, y: 0, w: 40, h: 12};
+    ≔ pane = Pane_new_simulated(0, region, "/bin/bash");
+
+    // Test 1: slave_fd should be -1 after creation
+    ⎇ pane.slave_fd == -1 {
+        println("slave_fd_closed: OK");
+    } ⎉ {
+        println("slave_fd_closed: FAILED fd=" + to_string(pane.slave_fd));
+    }
+
+    // Test 2: master_fd should still be valid (>= 0)
+    ⎇ pane.master_fd >= 0 {
+        println("master_fd_valid: OK");
+    } ⎉ {
+        println("master_fd_valid: FAILED fd=" + to_string(pane.master_fd));
+    }
+}

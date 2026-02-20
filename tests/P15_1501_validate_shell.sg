@@ -1,0 +1,27 @@
+// P15_1501: validate_shell returns path if valid, DEFAULT_SHELL if not
+≔ DEFAULT_SHELL = "/bin/bash";
+
+rite validate_shell(shell) {
+    ⎇ fs_exists(shell) == true {
+        ↩ shell
+    }
+    ↩ DEFAULT_SHELL
+}
+
+rite main() {
+    // Test 1: Valid shell (/bin/bash exists on Linux)
+    ≔ r1 = validate_shell("/bin/bash");
+    ⎇ r1 == "/bin/bash" {
+        println("valid_shell: OK");
+    } ⎉ {
+        println("valid_shell: FAILED got=" + r1);
+    }
+
+    // Test 2: Invalid shell falls back to DEFAULT_SHELL
+    ≔ r2 = validate_shell("/nope/no/shell");
+    ⎇ r2 == DEFAULT_SHELL {
+        println("invalid_shell_fallback: OK");
+    } ⎉ {
+        println("invalid_shell_fallback: FAILED got=" + r2);
+    }
+}

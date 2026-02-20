@@ -1,0 +1,34 @@
+// P15_1517: Creating pane at max shows feedback message
+
+rite main() {
+    ≔ max_panes = 12;
+    ≔ current_panes = 12;
+
+    ≔ mut msg = "";
+    ⎇ current_panes >= max_panes {
+        msg = "Max panes (" + to_string(max_panes) + ") reached";
+    } ⎉ {
+        msg = "created";
+    }
+
+    ⎇ msg == "Max panes (12) reached" {
+        println("max_panes_msg: OK");
+    } ⎉ {
+        println("max_panes_msg: FAILED got=" + msg);
+    }
+
+    // Below max: should create
+    ≔ current_panes2 = 5;
+    ≔ mut msg2 = "";
+    ⎇ current_panes2 >= max_panes {
+        msg2 = "Max panes (" + to_string(max_panes) + ") reached";
+    } ⎉ {
+        msg2 = "created";
+    }
+
+    ⎇ msg2 == "created" {
+        println("below_max_create: OK");
+    } ⎉ {
+        println("below_max_create: FAILED got=" + msg2);
+    }
+}

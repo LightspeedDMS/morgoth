@@ -1,0 +1,58 @@
+// P15_1541: Mouse click changes focus via find_pane_at
+
+rite find_pane_at(panes, mx, my) {
+    ≔ mut result = -1;
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ≔ r = panes[i].region;
+        ⎇ mx >= r.x ∧ mx < r.x + r.w ∧ my >= r.y ∧ my < r.y + r.h {
+            result = i;
+        }
+        i = i + 1;
+    }
+    result
+}
+
+rite main() {
+    // Two panes side by side: pane 0 at (0,0,40,12), pane 1 at (40,0,40,12)
+    ≔ panes = [
+        {region: {x: 0, y: 0, w: 40, h: 12}},
+        {region: {x: 40, y: 0, w: 40, h: 12}}
+    ];
+
+    // Test 1: Click at (5, 5) -> pane 0
+    ≔ r1 = find_pane_at(panes, 5, 5);
+    ⎇ r1 == 0 {
+        println("click_pane_0: OK");
+    } ⎉ {
+        println("click_pane_0: FAILED got=" + to_string(r1));
+    }
+
+    // Test 2: Click at (50, 5) -> pane 1
+    ≔ r2 = find_pane_at(panes, 50, 5);
+    ⎇ r2 == 1 {
+        println("click_pane_1: OK");
+    } ⎉ {
+        println("click_pane_1: FAILED got=" + to_string(r2));
+    }
+
+    // Test 3: Click outside both -> -1
+    ≔ r3 = find_pane_at(panes, 90, 5);
+    ⎇ r3 == -1 {
+        println("click_outside: OK");
+    } ⎉ {
+        println("click_outside: FAILED got=" + to_string(r3));
+    }
+
+    // Test 4: Simulate focus change
+    ≔ mut focus = 0;
+    ≔ clicked = find_pane_at(panes, 50, 5);
+    ⎇ clicked >= 0 ∧ clicked != focus {
+        focus = clicked;
+    }
+    ⎇ focus == 1 {
+        println("focus_changed: OK");
+    } ⎉ {
+        println("focus_changed: FAILED focus=" + to_string(focus));
+    }
+}

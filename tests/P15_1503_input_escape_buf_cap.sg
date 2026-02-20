@@ -1,0 +1,68 @@
+// P15_1503: Input escape_buf capped at 256
+≔ INPUT_ESC_BUF_MAX = 256;
+
+rite InputState_new() {
+    ↩ {
+        leader_active: false,
+        mouse_mode: true,
+        escape_buf: "",
+        in_escape: false,
+        last_escape_buf: "",
+        confirming_close: false
+    }
+}
+
+// Simplified process_input focusing on escape buf cap
+rite process_input_esc_test(input_state, byte) {
+    ⎇ input_state.in_escape == true {
+        input_state.escape_buf = input_state.escape_buf + from_char_code(byte);
+        // CAP: overflow resets
+        ⎇ len(input_state.escape_buf) > INPUT_ESC_BUF_MAX {
+            input_state.in_escape = false;
+            input_state.escape_buf = "";
+            ↩ "none"
+        }
+        // Normal terminal check for non-mouse sequences
+        ⎇ byte >= 64 ∧ byte <= 126 ∧ len(input_state.escape_buf) >= 2 {
+            input_state.last_escape_buf = input_state.escape_buf;
+            input_state.in_escape = false;
+            input_state.escape_buf = "";
+            ↩ "forward_esc"
+        }
+        ↩ "none"
+    } ⎉ {
+        ⎇ byte == 27 {
+            input_state.in_escape = true;
+            input_state.escape_buf = "";
+            ↩ "none"
+        }
+        ↩ "passthrough"
+    }
+}
+
+rite main() {
+    ≔ input = InputState_new();
+
+    // Start escape sequence
+    input.in_escape = true;
+    input.escape_buf = "";
+
+    // Feed 260 non-terminal bytes (digit '0' = byte 48, which is < 64)
+    ≔ mut i = 0;
+    ⟳ i < 260 {
+        process_input_esc_test(input, 48);
+        i = i + 1;
+    }
+
+    // Should have reset
+    ⎇ input.in_escape == false {
+        println("input_esc_cap_resets: OK");
+    } ⎉ {
+        println("input_esc_cap_resets: FAILED in_escape=" + to_string(input.in_escape));
+    }
+    ⎇ input.escape_buf == "" {
+        println("input_esc_buf_cleared: OK");
+    } ⎉ {
+        println("input_esc_buf_cleared: FAILED len=" + to_string(len(input.escape_buf)));
+    }
+}

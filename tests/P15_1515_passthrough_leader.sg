@@ -1,0 +1,76 @@
+// P15_1515: Ctrl-B Ctrl-B sends leader to child PTY
+≔ LEADER_KEY = 2;
+
+rite CopyModeState_new() {
+    ↩ {active: false, search_active: false}
+}
+
+rite InputState_new() {
+    ↩ {
+        leader_active: false,
+        mouse_mode: true,
+        escape_buf: "",
+        in_escape: false,
+        last_escape_buf: "",
+        confirming_close: false,
+        confirming_quit: false,
+        showing_help: false,
+        leader_key: 2,
+        copy_mode: CopyModeState_new()
+    }
+}
+
+rite process_input(input_state, byte, pane_count) {
+    ⎇ input_state.copy_mode.active == true { ↩ "none" }
+    ⎇ input_state.confirming_quit == true {
+        input_state.confirming_quit = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "quit_confirm" }
+        ↩ "quit_cancel"
+    }
+    ⎇ input_state.confirming_close == true {
+        input_state.confirming_close = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "close_confirm" }
+        ↩ "close_cancel"
+    }
+    ⎇ input_state.showing_help == true {
+        input_state.showing_help = false;
+        ↩ "help_dismiss"
+    }
+
+    ≔ mut action = "passthrough";
+    ⎇ input_state.in_escape == true {
+        input_state.in_escape = false;
+        action = "none";
+    } ⎉ {
+        ⎇ byte == 27 {
+            input_state.in_escape = true;
+            action = "none";
+        } ⎉ {
+            ⎇ input_state.leader_active == true {
+                input_state.leader_active = false;
+                action = "none";
+                ⎇ byte == input_state.leader_key { action = "passthrough_leader"; }
+                ⎇ byte == 110 { action = "focus_next"; }
+            } ⎉ {
+                ⎇ byte == input_state.leader_key {
+                    input_state.leader_active = true;
+                    action = "leader_activate";
+                }
+            }
+        }
+    }
+    action
+}
+
+rite main() {
+    ≔ input = InputState_new();
+
+    // Test: Ctrl-B then Ctrl-B → passthrough_leader
+    input.leader_active = true;
+    ≔ r = process_input(input, 2, 2);
+    ⎇ r == "passthrough_leader" {
+        println("passthrough_leader: OK");
+    } ⎉ {
+        println("passthrough_leader: FAILED got=" + r);
+    }
+}

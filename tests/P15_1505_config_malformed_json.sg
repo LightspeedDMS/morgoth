@@ -1,0 +1,44 @@
+// P15_1505: load_config with malformed JSON returns defaults
+
+rite load_config_safe(raw) {
+    ≔ mut cfg = {
+        shell: "/bin/bash",
+        scrollback_lines: 1000,
+        leader_key: 2,
+        hmr: false,
+        max_panes: 12
+    };
+    // Guard: only parse if non-empty and starts with "{"
+    ⎇ len(raw) > 0 ∧ starts_with(raw, "{") == true {
+        ≔ j = json_parse(raw);
+        ≔ j_shell = map_get(j, "shell");
+        ⎇ j_shell != null { cfg.shell = j_shell; }
+    }
+    ↩ cfg
+}
+
+rite main() {
+    // Test 1: Empty string returns defaults
+    ≔ c1 = load_config_safe("");
+    ⎇ c1.shell == "/bin/bash" ∧ c1.hmr == false {
+        println("empty_defaults: OK");
+    } ⎉ {
+        println("empty_defaults: FAILED");
+    }
+
+    // Test 2: Garbage string returns defaults
+    ≔ c2 = load_config_safe("not json at all");
+    ⎇ c2.shell == "/bin/bash" ∧ c2.hmr == false {
+        println("garbage_defaults: OK");
+    } ⎉ {
+        println("garbage_defaults: FAILED");
+    }
+
+    // Test 3: Valid JSON works
+    ≔ c3 = load_config_safe("{\"shell\": \"/bin/zsh\"}");
+    ⎇ c3.shell == "/bin/zsh" {
+        println("valid_json_parsed: OK");
+    } ⎉ {
+        println("valid_json_parsed: FAILED got=" + c3.shell);
+    }
+}

@@ -1,0 +1,95 @@
+// P15_1513: Leader + digit keys focus panes 1-9
+≔ LEADER_KEY = 2;
+
+rite CopyModeState_new() {
+    ↩ {active: false, search_active: false}
+}
+
+rite InputState_new() {
+    ↩ {
+        leader_active: false,
+        mouse_mode: true,
+        escape_buf: "",
+        in_escape: false,
+        last_escape_buf: "",
+        confirming_close: false,
+        confirming_quit: false,
+        showing_help: false,
+        leader_key: 2,
+        copy_mode: CopyModeState_new()
+    }
+}
+
+rite process_input(input_state, byte, pane_count) {
+    ⎇ input_state.copy_mode.active == true { ↩ "none" }
+    ⎇ input_state.confirming_quit == true {
+        input_state.confirming_quit = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "quit_confirm" }
+        ↩ "quit_cancel"
+    }
+    ⎇ input_state.confirming_close == true {
+        input_state.confirming_close = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "close_confirm" }
+        ↩ "close_cancel"
+    }
+    ⎇ input_state.showing_help == true {
+        input_state.showing_help = false;
+        ↩ "help_dismiss"
+    }
+
+    ≔ mut action = "passthrough";
+    ⎇ input_state.in_escape == true {
+        input_state.in_escape = false;
+        action = "none";
+    } ⎉ {
+        ⎇ byte == 27 {
+            input_state.in_escape = true;
+            action = "none";
+        } ⎉ {
+            ⎇ input_state.leader_active == true {
+                input_state.leader_active = false;
+                action = "none";
+                ⎇ byte >= 49 ∧ byte <= 57 {
+                    action = "focus_" + to_string(byte - 48);
+                }
+            } ⎉ {
+                ⎇ byte == input_state.leader_key {
+                    input_state.leader_active = true;
+                    action = "leader_activate";
+                }
+            }
+        }
+    }
+    action
+}
+
+rite main() {
+    ≔ input = InputState_new();
+
+    // Test 1: Ctrl-B 1 → focus_1
+    input.leader_active = true;
+    ≔ r1 = process_input(input, 49, 5);
+    ⎇ r1 == "focus_1" {
+        println("focus_1: OK");
+    } ⎉ {
+        println("focus_1: FAILED got=" + r1);
+    }
+
+    // Test 2: Ctrl-B 5 → focus_5
+    input.leader_active = true;
+    ≔ r5 = process_input(input, 53, 5);
+    ⎇ r5 == "focus_5" {
+        println("focus_5: OK");
+    } ⎉ {
+        println("focus_5: FAILED got=" + r5);
+    }
+
+    // Test 3: Ctrl-B 9 → focus_9
+    input.leader_active = true;
+    ≔ r9 = process_input(input, 57, 9);
+    ⎇ r9 == "focus_9" {
+        println("focus_9: OK");
+    } ⎉ {
+        println("focus_9: FAILED got=" + r9);
+    }
+}

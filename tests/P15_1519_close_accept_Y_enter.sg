@@ -1,0 +1,75 @@
+// P15_1519: Close confirmation accepts y/Y/Enter
+
+rite CopyModeState_new() {
+    ↩ {active: false, search_active: false}
+}
+
+rite InputState_new() {
+    ↩ {
+        leader_active: false,
+        mouse_mode: true,
+        escape_buf: "",
+        in_escape: false,
+        last_escape_buf: "",
+        confirming_close: false,
+        confirming_quit: false,
+        showing_help: false,
+        leader_key: 2,
+        copy_mode: CopyModeState_new()
+    }
+}
+
+rite process_input(input_state, byte, pane_count) {
+    ⎇ input_state.copy_mode.active == true { ↩ "none" }
+    ⎇ input_state.confirming_quit == true {
+        input_state.confirming_quit = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "quit_confirm" }
+        ↩ "quit_cancel"
+    }
+    ⎇ input_state.confirming_close == true {
+        input_state.confirming_close = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "close_confirm" }
+        ↩ "close_cancel"
+    }
+    ↩ "passthrough"
+}
+
+rite main() {
+    ≔ input = InputState_new();
+
+    // Test 1: y (121) confirms close
+    input.confirming_close = true;
+    ≔ r1 = process_input(input, 121, 2);
+    ⎇ r1 == "close_confirm" {
+        println("close_y: OK");
+    } ⎉ {
+        println("close_y: FAILED got=" + r1);
+    }
+
+    // Test 2: Y (89) confirms close
+    input.confirming_close = true;
+    ≔ r2 = process_input(input, 89, 2);
+    ⎇ r2 == "close_confirm" {
+        println("close_Y: OK");
+    } ⎉ {
+        println("close_Y: FAILED got=" + r2);
+    }
+
+    // Test 3: Enter (13) confirms close
+    input.confirming_close = true;
+    ≔ r3 = process_input(input, 13, 2);
+    ⎇ r3 == "close_confirm" {
+        println("close_enter: OK");
+    } ⎉ {
+        println("close_enter: FAILED got=" + r3);
+    }
+
+    // Test 4: n (110) cancels
+    input.confirming_close = true;
+    ≔ r4 = process_input(input, 110, 2);
+    ⎇ r4 == "close_cancel" {
+        println("close_cancel_n: OK");
+    } ⎉ {
+        println("close_cancel_n: FAILED got=" + r4);
+    }
+}

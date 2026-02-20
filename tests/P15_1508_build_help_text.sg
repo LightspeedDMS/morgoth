@@ -1,0 +1,77 @@
+// P15_1508: build_help_text returns complete keybinding reference
+
+rite build_help_text() {
+    ≔ mut t = "Morgoth Keybindings\n";
+    t = t + "-------------------\n";
+    t = t + "^B+n    Next pane\n";
+    t = t + "^B+p    Previous pane\n";
+    t = t + "^B+1-9  Focus pane N\n";
+    t = t + "^B+c    New terminal\n";
+    t = t + "^B+m    New monitor\n";
+    t = t + "^B+x    Close pane\n";
+    t = t + "^B+z    Zoom toggle\n";
+    t = t + "^B+[    Copy mode\n";
+    t = t + "^B+/    Search\n";
+    t = t + "^B+S    Save profile\n";
+    t = t + "^B+q    Quit\n";
+    t = t + "^B+?    This help\n";
+    t = t + "^B+^B   Send ^B to pane\n";
+    ↩ t
+}
+
+rite main() {
+    ≔ help = build_help_text();
+
+    // Test 1: Contains header
+    ≔ mut has_header = false;
+    ⎇ starts_with(help, "Morgoth Keybindings") == true { has_header = true; }
+    ⎇ has_header == true {
+        println("has_header: OK");
+    } ⎉ {
+        println("has_header: FAILED");
+    }
+
+    // Test 2: Contains key bindings (check for a few critical ones)
+    ≔ mut has_next = false;
+    ≔ mut has_quit = false;
+    ≔ mut has_search = false;
+    ≔ mut has_help = false;
+    ≔ mut has_passthrough = false;
+
+    ≔ mut i = 0;
+    ⟳ i < len(help) - 4 {
+        ≔ c4 = substring(help, i, i + 4);
+        ⎇ c4 == "^B+n" { has_next = true; }
+        ⎇ c4 == "^B+q" { has_quit = true; }
+        ⎇ c4 == "^B+/" { has_search = true; }
+        ⎇ c4 == "^B+?" { has_help = true; }
+        ⎇ c4 == "^B+^" { has_passthrough = true; }
+        i = i + 1;
+    }
+
+    ⎇ has_next == true {
+        println("has_next_pane: OK");
+    } ⎉ {
+        println("has_next_pane: FAILED");
+    }
+    ⎇ has_quit == true {
+        println("has_quit: OK");
+    } ⎉ {
+        println("has_quit: FAILED");
+    }
+    ⎇ has_search == true {
+        println("has_search: OK");
+    } ⎉ {
+        println("has_search: FAILED");
+    }
+    ⎇ has_help == true {
+        println("has_help: OK");
+    } ⎉ {
+        println("has_help: FAILED");
+    }
+    ⎇ has_passthrough == true {
+        println("has_passthrough: OK");
+    } ⎉ {
+        println("has_passthrough: FAILED");
+    }
+}

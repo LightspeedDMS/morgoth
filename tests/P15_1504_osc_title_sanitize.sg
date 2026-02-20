@@ -1,0 +1,43 @@
+// P15_1504: OSC title with control chars stripped
+
+rite sanitize_title(s) {
+    ≔ mut result = "";
+    ≔ mut i = 0;
+    ⟳ i < len(s) {
+        ≔ code = char_code_at(s, i);
+        ⎇ code >= 32 ∧ code != 127 {
+            result = result + to_string(char_at(s, i));
+        }
+        i = i + 1;
+    }
+    ↩ result
+}
+
+rite main() {
+    // Test 1: Clean title passes through
+    ≔ r1 = sanitize_title("bash");
+    ⎇ r1 == "bash" {
+        println("clean_title: OK");
+    } ⎉ {
+        println("clean_title: FAILED got=" + r1);
+    }
+
+    // Test 2: Control chars stripped
+    // Build string with control char (bell = 7) embedded
+    ≔ dirty = "ba" + from_char_code(7) + "sh" + from_char_code(0) + "!";
+    ≔ r2 = sanitize_title(dirty);
+    ⎇ r2 == "bash!" {
+        println("control_stripped: OK");
+    } ⎉ {
+        println("control_stripped: FAILED got=" + r2);
+    }
+
+    // Test 3: DEL (127) stripped
+    ≔ del_str = "te" + from_char_code(127) + "st";
+    ≔ r3 = sanitize_title(del_str);
+    ⎇ r3 == "test" {
+        println("del_stripped: OK");
+    } ⎉ {
+        println("del_stripped: FAILED got=" + r3);
+    }
+}

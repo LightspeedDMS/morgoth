@@ -1,0 +1,132 @@
+// P15_1521: Help overlay renders keybinding text
+
+rite Cell_new(ch, fg, bg, dirty) {
+    ↩ {ch: ch, fg: fg, bg: bg, dirty: dirty}
+}
+
+rite Grid_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, Cell_new(" ", 7, 0, true));
+        i = i + 1;
+    }
+    ↩ {rows: rows, cols: cols, cells: cells}
+}
+
+rite Grid_set(grid, row, col, ch, fg, bg) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        grid.cells[idx] = Cell_new(ch, fg, bg, true);
+    }
+}
+
+rite Grid_get(grid, row, col) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        ↩ grid.cells[idx]
+    }
+    ↩ Cell_new(" ", 7, 0, false)
+}
+
+rite build_help_text() {
+    ≔ mut t = "Morgoth Keybindings\n";
+    t = t + "-------------------\n";
+    t = t + "^B+n    Next pane\n";
+    t = t + "^B+p    Previous pane\n";
+    t = t + "^B+1-9  Focus pane N\n";
+    t = t + "^B+c    New terminal\n";
+    t = t + "^B+m    New monitor\n";
+    t = t + "^B+x    Close pane\n";
+    t = t + "^B+z    Zoom toggle\n";
+    t = t + "^B+[    Copy mode\n";
+    t = t + "^B+/    Search\n";
+    t = t + "^B+S    Save profile\n";
+    t = t + "^B+q    Quit\n";
+    t = t + "^B+?    This help\n";
+    t = t + "^B+^B   Send ^B to pane\n";
+    ↩ t
+}
+
+rite render_help_overlay(grid, region) {
+    ≔ help = build_help_text();
+    ≔ inner_x = region.x + 1;
+    ≔ inner_y = region.y + 1;
+    ≔ inner_w = region.w - 2;
+    ≔ inner_h = region.h - 2;
+
+    // Clear interior
+    ≔ mut r = 0;
+    ⟳ r < inner_h {
+        ≔ mut c = 0;
+        ⟳ c < inner_w {
+            Grid_set(grid, inner_y + r, inner_x + c, " ", 7, 0);
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // Render help text
+    ≔ mut row = 0;
+    ≔ mut col = 0;
+    ≔ mut i = 0;
+    ⟳ i < len(help) ∧ row < inner_h {
+        ≔ ch = to_string(char_at(help, i));
+        ⎇ ch == "\n" {
+            row = row + 1;
+            col = 0;
+        } ⎉ {
+            ⎇ col < inner_w {
+                Grid_set(grid, inner_y + row, inner_x + col, ch, 14, 0);
+                col = col + 1;
+            }
+        }
+        i = i + 1;
+    }
+}
+
+rite main() {
+    ≔ grid = Grid_new(22, 40);
+    ≔ region = {x: 0, y: 0, w: 40, h: 22};
+
+    render_help_overlay(grid, region);
+
+    // Check first row contains "Morgoth"
+    ≔ mut first_row = "";
+    ≔ mut c = 0;
+    ⟳ c < 20 {
+        ≔ cell = Grid_get(grid, 1, 1 + c);
+        first_row = first_row + cell.ch;
+        c = c + 1;
+    }
+
+    ⎇ starts_with(first_row, "Morgoth Keybindings") == true {
+        println("help_header_rendered: OK");
+    } ⎉ {
+        println("help_header_rendered: FAILED got=" + first_row);
+    }
+
+    // Check that a binding is visible (row 3 should have "^B+n")
+    ≔ mut binding_row = "";
+    c = 0;
+    ⟳ c < 20 {
+        ≔ cell = Grid_get(grid, 3, 1 + c);
+        binding_row = binding_row + cell.ch;
+        c = c + 1;
+    }
+
+    ⎇ starts_with(binding_row, "^B+n") == true {
+        println("help_binding_visible: OK");
+    } ⎉ {
+        println("help_binding_visible: FAILED got=" + binding_row);
+    }
+
+    // Check help text uses fg=14 (bright cyan)
+    ≔ cell = Grid_get(grid, 1, 1);
+    ⎇ cell.fg == 14 {
+        println("help_text_color: OK");
+    } ⎉ {
+        println("help_text_color: FAILED fg=" + to_string(cell.fg));
+    }
+}

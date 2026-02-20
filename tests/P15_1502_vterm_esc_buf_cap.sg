@@ -1,0 +1,92 @@
+// P15_1502: VTerm CSI esc_buf capped at 4096
+≔ ESC_BUF_MAX = 4096;
+
+rite VTerm_new() {
+    ↩ {
+        esc_state: "normal",
+        esc_buf: "",
+        rows: 24,
+        cols: 80,
+        cursor_row: 0,
+        cursor_col: 0,
+        scroll_top: 0,
+        scroll_bottom: 23,
+        scrollback: [],
+        cells: [],
+        fg: 7,
+        bg: 0,
+        in_alt_screen: false,
+        saved_row: 0,
+        saved_col: 0,
+        title: ""
+    }
+}
+
+// Simplified vterm_feed that tests ONLY the CSI buffer cap
+rite vterm_feed_csi_test(vt, data) {
+    ≔ mut i = 0;
+    ⟳ i < len(data) {
+        ≔ code = char_code_at(data, i);
+        ≔ ch = to_string(char_at(data, i));
+
+        ⎇ vt.esc_state == "csi" {
+            ⎇ (code >= 64 ∧ code <= 90) ∨ (code >= 97 ∧ code <= 122) {
+                // Terminal byte — dispatch would happen here
+                vt.esc_state = "normal";
+                vt.esc_buf = "";
+            } ⎉ {
+                vt.esc_buf = vt.esc_buf + ch;
+                // CAP: overflow resets to normal
+                ⎇ len(vt.esc_buf) > ESC_BUF_MAX {
+                    vt.esc_state = "normal";
+                    vt.esc_buf = "";
+                }
+            }
+        } ⎉ { ⎇ vt.esc_state == "normal" {
+            ⎇ code == 27 {
+                vt.esc_state = "escape";
+                vt.esc_buf = "";
+            }
+        } ⎉ { ⎇ vt.esc_state == "escape" {
+            ⎇ ch == "[" {
+                vt.esc_state = "csi";
+                vt.esc_buf = "";
+            } ⎉ {
+                vt.esc_state = "normal";
+            }
+        } } }
+
+        i = i + 1;
+    }
+}
+
+rite main() {
+    ≔ vt = VTerm_new();
+
+    // Enter CSI state: ESC [
+    vt.esc_state = "csi";
+    vt.esc_buf = "";
+
+    // Build a string > 4096 chars of non-terminal bytes (digits)
+    ≔ mut big = "";
+    ≔ mut i = 0;
+    ⟳ i < 4100 {
+        big = big + "0";
+        i = i + 1;
+    }
+
+    // Feed the big string
+    vterm_feed_csi_test(vt, big);
+
+    // Should have reset to normal
+    ⎇ vt.esc_state == "normal" {
+        println("csi_buf_cap_resets: OK");
+    } ⎉ {
+        println("csi_buf_cap_resets: FAILED state=" + vt.esc_state);
+    }
+    ⎇ vt.esc_buf == "" {
+        println("csi_buf_cleared: OK");
+    } ⎉ {
+        println("csi_buf_cleared: FAILED len=" + to_string(len(vt.esc_buf)));
+    }
+}

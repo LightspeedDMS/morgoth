@@ -1,0 +1,70 @@
+// P15_1531: vterm_feed preserves scroll_offset when > 0
+
+rite VTerm_new() {
+    ↩ {
+        esc_state: "normal",
+        esc_buf: "",
+        cursor_row: 0,
+        cursor_col: 0,
+        cols: 80,
+        rows: 24,
+        scroll_top: 0,
+        scroll_bottom: 23,
+        scrollback: [],
+        cells: [],
+        fg: 7,
+        bg: 0,
+        in_alt_screen: false,
+        saved_row: 0,
+        saved_col: 0,
+        title: "",
+        scroll_offset: 5
+    }
+}
+
+rite vterm_put_char(vt, ch) { vt.cursor_col = vt.cursor_col + 1; }
+rite vterm_scroll_up(vt) { }
+
+rite vterm_feed(vt, data) {
+    ≔ mut i = 0;
+    ⟳ i < len(data) {
+        ≔ code = char_code_at(data, i);
+        ≔ ch = to_string(char_at(data, i));
+
+        ⎇ vt.esc_state == "normal" {
+            ⎇ code == 27 {
+                vt.esc_state = "escape";
+                vt.esc_buf = "";
+            } ⎉ { ⎇ code == 13 {
+                vt.cursor_col = 0;
+            } ⎉ { ⎇ code == 10 {
+                vt.cursor_col = 0;
+                vt.cursor_row = vt.cursor_row + 1;
+                ⎇ vt.cursor_row > vt.scroll_bottom {
+                    vterm_scroll_up(vt);
+                    vt.cursor_row = vt.scroll_bottom;
+                }
+            } ⎉ { ⎇ code >= 32 {
+                vterm_put_char(vt, ch);
+            } } } }
+        }
+
+        i = i + 1;
+    }
+    // scroll_offset is NOT reset (Phase 15C fix)
+}
+
+rite main() {
+    ≔ vt = VTerm_new();
+    vt.scroll_offset = 5;
+
+    // Feed some normal text
+    vterm_feed(vt, "hello");
+
+    // scroll_offset should still be 5
+    ⎇ vt.scroll_offset == 5 {
+        println("scroll_preserved: OK");
+    } ⎉ {
+        println("scroll_preserved: FAILED offset=" + to_string(vt.scroll_offset));
+    }
+}

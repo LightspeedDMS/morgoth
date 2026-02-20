@@ -1,0 +1,122 @@
+// P15_1510: Quit confirmation flow
+≔ LEADER_KEY = 2;
+
+rite CopyModeState_new() {
+    ↩ {active: false, search_active: false}
+}
+
+rite InputState_new() {
+    ↩ {
+        leader_active: false,
+        mouse_mode: true,
+        escape_buf: "",
+        in_escape: false,
+        last_escape_buf: "",
+        confirming_close: false,
+        confirming_quit: false,
+        showing_help: false,
+        leader_key: 2,
+        copy_mode: CopyModeState_new()
+    }
+}
+
+rite process_input(input_state, byte, pane_count) {
+    ⎇ input_state.copy_mode.active == true { ↩ "none" }
+
+    // Quit confirmation intercept
+    ⎇ input_state.confirming_quit == true {
+        input_state.confirming_quit = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "quit_confirm" }
+        ↩ "quit_cancel"
+    }
+
+    // Close confirmation intercept
+    ⎇ input_state.confirming_close == true {
+        input_state.confirming_close = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "close_confirm" }
+        ↩ "close_cancel"
+    }
+
+    // Help dismiss
+    ⎇ input_state.showing_help == true {
+        input_state.showing_help = false;
+        ↩ "help_dismiss"
+    }
+
+    ≔ mut action = "passthrough";
+
+    ⎇ input_state.in_escape == true {
+        input_state.in_escape = false;
+        input_state.escape_buf = "";
+        action = "none";
+    } ⎉ {
+        ⎇ byte == 27 {
+            input_state.in_escape = true;
+            input_state.escape_buf = "";
+            action = "none";
+        } ⎉ {
+            ⎇ input_state.leader_active == true {
+                input_state.leader_active = false;
+                action = "none";
+                ⎇ byte == 113 { action = "quit_request"; }
+                ⎇ byte == 110 { action = "focus_next"; }
+            } ⎉ {
+                ⎇ byte == input_state.leader_key {
+                    input_state.leader_active = true;
+                    action = "leader_activate";
+                }
+            }
+        }
+    }
+
+    action
+}
+
+rite main() {
+    ≔ input = InputState_new();
+
+    // Test 1: Ctrl-B q → quit_request
+    input.leader_active = true;
+    ≔ r1 = process_input(input, 113, 2);
+    ⎇ r1 == "quit_request" {
+        println("quit_request: OK");
+    } ⎉ {
+        println("quit_request: FAILED got=" + r1);
+    }
+
+    // Test 2: After quit_request, set confirming_quit, then y → quit_confirm
+    input.confirming_quit = true;
+    ≔ r2 = process_input(input, 121, 2);
+    ⎇ r2 == "quit_confirm" {
+        println("quit_confirm_y: OK");
+    } ⎉ {
+        println("quit_confirm_y: FAILED got=" + r2);
+    }
+
+    // Test 3: Y (89) also confirms
+    input.confirming_quit = true;
+    ≔ r3 = process_input(input, 89, 2);
+    ⎇ r3 == "quit_confirm" {
+        println("quit_confirm_Y: OK");
+    } ⎉ {
+        println("quit_confirm_Y: FAILED got=" + r3);
+    }
+
+    // Test 4: Enter (13) also confirms
+    input.confirming_quit = true;
+    ≔ r4 = process_input(input, 13, 2);
+    ⎇ r4 == "quit_confirm" {
+        println("quit_confirm_enter: OK");
+    } ⎉ {
+        println("quit_confirm_enter: FAILED got=" + r4);
+    }
+
+    // Test 5: n (110) cancels
+    input.confirming_quit = true;
+    ≔ r5 = process_input(input, 110, 2);
+    ⎇ r5 == "quit_cancel" {
+        println("quit_cancel_n: OK");
+    } ⎉ {
+        println("quit_cancel_n: FAILED got=" + r5);
+    }
+}

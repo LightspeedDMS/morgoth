@@ -22,6 +22,8 @@
 ≔ POLL_INTERVAL_MS = 16;   // ~60fps target
 ≔ SHUTDOWN_TIMEOUT_MS = 3000;
 ≔ HMR_CHECK_INTERVAL = 30; // Check every ~500ms (30 * 16ms)
+≔ ESC_BUF_MAX = 4096;      // Max VTerm escape buffer length
+≔ INPUT_ESC_BUF_MAX = 256;  // Max input escape buffer length
 ≔ SELF_PATH = "src/morgoth.sg";
 
 // Box-drawing characters (Unicode)
@@ -78,6 +80,9 @@ rite Pane·new(id, region, shell) {
 
     ≔ pid = Sys·spawn_pty(shell, [], pty.slave_fd);
 
+    // Parent closes slave fd after spawn (child inherits it via fork)
+    Sys·close(pty.slave_fd);
+
     // VTerm interior dimensions (region minus border)
     ≔ vt = VTerm·new(region.h - 2, region.w - 2);
 
@@ -85,7 +90,7 @@ rite Pane·new(id, region, shell) {
         id: id,
         region: region,
         master_fd: pty.master_fd,
-        slave_fd: pty.slave_fd,
+        slave_fd: -1,
         pid: pid,
         alive: true,
         title: "bash",
@@ -903,6 +908,20 @@ rite vterm_reverse_index(vt) {
     }
 }
 
+// Strip control characters from a string (keep printable only)
+rite sanitize_title(s) {
+    ≔ mut result = "";
+    ≔ mut i = 0;
+    ⟳ i < len(s) {
+        ≔ code = char_code_at(s, i);
+        ⎇ code >= 32 ∧ code != 127 {
+            result = result + to_string(char_at(s, i));
+        }
+        i = i + 1;
+    }
+    ↩ result
+}
+
 // Dispatch an OSC sequence
 rite vterm_osc_dispatch(vt, buf) {
     // Find the first semicolon to separate command from payload
@@ -919,9 +938,9 @@ rite vterm_osc_dispatch(vt, buf) {
     ⎇ sep_idx >= 0 {
         ≔ cmd_str = substring(buf, 0, sep_idx);
         ≔ payload = substring(buf, sep_idx + 1, len(buf));
-        // OSC 0 and OSC 2 set title
+        // OSC 0 and OSC 2 set title (sanitize to remove control chars)
         ⎇ cmd_str == "0" ∨ cmd_str == "2" {
-            vt.title = payload;
+            vt.title = sanitize_title(payload);
         }
     }
 }
@@ -941,6 +960,11 @@ rite vterm_feed(vt, data) {
                 vt.esc_buf = "";
             } ⎉ {
                 vt.esc_buf = vt.esc_buf + ch;
+                // Cap: prevent unbounded buffer growth
+                ⎇ len(vt.esc_buf) > ESC_BUF_MAX {
+                    vt.esc_state = "normal";
+                    vt.esc_buf = "";
+                }
             }
         } ⎉ { ⎇ vt.esc_state == "osc" {
             ⎇ code == 7 {
@@ -951,6 +975,11 @@ rite vterm_feed(vt, data) {
                 vt.esc_state = "osc_esc";
             } ⎉ {
                 vt.esc_buf = vt.esc_buf + ch;
+                // Cap: prevent unbounded buffer growth
+                ⎇ len(vt.esc_buf) > ESC_BUF_MAX {
+                    vt.esc_state = "normal";
+                    vt.esc_buf = "";
+                }
             } }
         } ⎉ { ⎇ vt.esc_state == "osc_esc" {
             ⎇ ch == "\\" {
@@ -1003,34 +1032,32 @@ rite vterm_feed(vt, data) {
                 vt.esc_state = "normal";
             } } } } } } }
         } ⎉ {
-            // Normal state
+            // Normal state — ⎇/⎉ chain so only ONE handler fires per byte
             ⎇ code == 27 {
                 vt.esc_state = "escape";
                 vt.esc_buf = "";
-            }
-            ⎇ code == 13 { vt.cursor_col = 0; }
-            ⎇ code == 10 {
+            } ⎉ { ⎇ code == 13 {
+                vt.cursor_col = 0;
+            } ⎉ { ⎇ code == 10 {
                 vt.cursor_col = 0;  // LF implies CR for internal feeds
                 vt.cursor_row = vt.cursor_row + 1;
                 ⎇ vt.cursor_row > vt.scroll_bottom {
                     vterm_scroll_up(vt);
                     vt.cursor_row = vt.scroll_bottom;
                 }
-            }
-            ⎇ code == 8 {
+            } ⎉ { ⎇ code == 8 {
                 ⎇ vt.cursor_col > 0 { vt.cursor_col = vt.cursor_col - 1; }
-            }
-            ⎇ code == 9 {
+            } ⎉ { ⎇ code == 9 {
                 vt.cursor_col = ((vt.cursor_col / 8) + 1) * 8;
                 ⎇ vt.cursor_col >= vt.cols { vt.cursor_col = vt.cols - 1; }
-            }
-            ⎇ code >= 32 { vterm_put_char(vt, ch); }
+            } ⎉ { ⎇ code >= 32 {
+                vterm_put_char(vt, ch);
+            } } } } } }
         } } } } } } }
 
         i = i + 1;
     }
-    // Reset scroll offset on new data
-    vt.scroll_offset = 0;
+    // scroll_offset preserved: user stays scrolled when new output arrives
 }
 
 // Blit VTerm cells to the main Grid at the given region (inside borders)
@@ -1100,33 +1127,47 @@ rite load_config() {
         shell: "/bin/bash",
         scrollback_lines: 1000,
         leader_key: 2,
-        hmr: true,
+        hmr: false,
         max_panes: 12
     };
 
     ⎇ fs_exists(config_path) == true {
         ≔ raw = fs_read(config_path);
-        ≔ j = json_parse(raw);
+        // Guard: only parse if non-empty and starts with "{"
+        ⎇ len(raw) > 0 ∧ starts_with(raw, "{") == true {
+            ≔ j = json_parse(raw);
 
-        // grid and panes keys are ignored (Phase 9: profiles replace static config)
-        ≔ j_shell = map_get(j, "shell");
-        ⎇ j_shell != null { cfg.shell = j_shell; }
-        ≔ j_scrollback = map_get(j, "scrollback_lines");
-        ⎇ j_scrollback != null { cfg.scrollback_lines = j_scrollback; }
-        ≔ j_leader = map_get(j, "leader_key");
-        ⎇ j_leader != null { cfg.leader_key = j_leader; }
-        ≔ j_hmr = map_get(j, "hmr");
-        ⎇ j_hmr != null { cfg.hmr = j_hmr; }
-        ≔ j_max = map_get(j, "max_panes");
-        ⎇ j_max != null { cfg.max_panes = j_max; }
-
+            // grid and panes keys are ignored (Phase 9: profiles replace static config)
+            ≔ j_shell = map_get(j, "shell");
+            ⎇ j_shell != null { cfg.shell = j_shell; }
+            ≔ j_scrollback = map_get(j, "scrollback_lines");
+            ⎇ j_scrollback != null { cfg.scrollback_lines = j_scrollback; }
+            ≔ j_leader = map_get(j, "leader_key");
+            ⎇ j_leader != null { cfg.leader_key = j_leader; }
+            ≔ j_hmr = map_get(j, "hmr");
+            ⎇ j_hmr != null { cfg.hmr = j_hmr; }
+            ≔ j_max = map_get(j, "max_panes");
+            ⎇ j_max != null { cfg.max_panes = j_max; }
+        }
     }
+
+    // Validate shell path
+    cfg.shell = validate_shell(cfg.shell);
 
     ↩ cfg
 }
 
+// Validate that a shell path exists; fall back to DEFAULT_SHELL
+rite validate_shell(shell) {
+    ⎇ fs_exists(shell) == true {
+        ↩ shell
+    }
+    ↩ DEFAULT_SHELL
+}
+
 // Load startup pane types from profile (or default to single terminal)
-rite load_profile() {
+// Clamps to max_panes to prevent resource exhaustion
+rite load_profile(max_panes) {
     ≔ home = env("HOME");
     ≔ profile_path = home + "/.morgoth/profiles/default.json";
     ≔ mut panes = [];
@@ -1138,6 +1179,16 @@ rite load_profile() {
         ⎇ j_panes != null ∧ len(j_panes) > 0 {
             panes = j_panes;
         }
+    }
+    // Clamp to max_panes
+    ⎇ len(panes) > max_panes {
+        ≔ mut clamped = [];
+        ≔ mut ci = 0;
+        ⟳ ci < max_panes {
+            push(clamped, panes[ci]);
+            ci = ci + 1;
+        }
+        panes = clamped;
     }
     ↩ panes
 }
@@ -1337,7 +1388,7 @@ rite border_colors(pane_type, is_focused) {
         ↩ {border_fg: 5, title_fg: 5}
     }
     ⎇ is_focused == true { ↩ {border_fg: 14, title_fg: 15} }
-    ↩ {border_fg: 8, title_fg: 8}
+    ↩ {border_fg: 7, title_fg: 7}
 }
 
 // Draw a border around a region in the grid
@@ -1453,6 +1504,26 @@ rite build_status_text(focus, panes, mode) {
     ↩ text
 }
 
+// Build complete keybinding reference for help overlay
+rite build_help_text() {
+    ≔ mut t = "Morgoth Keybindings\n";
+    t = t + "-------------------\n";
+    t = t + "^B+n    Next pane\n";
+    t = t + "^B+p    Previous pane\n";
+    t = t + "^B+1-9  Focus pane N\n";
+    t = t + "^B+c    New terminal\n";
+    t = t + "^B+m    New monitor\n";
+    t = t + "^B+x    Close pane\n";
+    t = t + "^B+z    Zoom toggle\n";
+    t = t + "^B+[    Copy mode\n";
+    t = t + "^B+/    Search\n";
+    t = t + "^B+S    Save profile\n";
+    t = t + "^B+q    Quit\n";
+    t = t + "^B+?    This help\n";
+    t = t + "^B+^B   Send ^B to pane\n";
+    ↩ t
+}
+
 // Render status bar at the bottom of the grid
 rite render_status_bar(grid, text) {
     ≔ row = grid.rows - 1;
@@ -1493,7 +1564,10 @@ rite render_status_bar_styled(grid, focus, panes, mode) {
     } ⎉ { ⎇ mode == "confirm" {
         pill = " CONFIRM ";
         pill_bg = 1;
-    } } }
+    } ⎉ { ⎇ mode == "leader" {
+        pill = " LEADER ";
+        pill_bg = 4;
+    } } } }
     ≔ mut pi = 0;
     ⟳ pi < len(pill) ∧ col < grid.cols {
         Grid·set(grid, row, col, to_string(char_at(pill, pi)), 0, pill_bg);
@@ -1523,13 +1597,13 @@ rite render_status_bar_styled(grid, focus, panes, mode) {
     } ⎉ { ⎇ mode == "search" {
         hints = " type to search  Enter accept  Esc cancel";
     } ⎉ { ⎇ mode == "confirm" {
-        hints = " y: confirm  n: cancel";
+        hints = " y/Y/Enter: confirm  n: cancel";
     } ⎉ {
-        hints = " c: new  x: close  z: zoom  /: search  q: quit";
+        hints = " ^B+c: new  ^B+x: close  ^B+z: zoom  ^B+/: search  ^B+q: quit";
     } } }
     ≔ mut hi = 0;
     ⟳ hi < len(hints) ∧ col < grid.cols {
-        Grid·set(grid, row, col, to_string(char_at(hints, hi)), 8, 0);
+        Grid·set(grid, row, col, to_string(char_at(hints, hi)), 7, 0);
         col = col + 1;
         hi = hi + 1;
     }
@@ -1885,7 +1959,7 @@ rite render_copy_mode(grid, region, cm) {
             ≔ minfo = is_search_match(cm, text_row, col);
             ⎇ minfo.hit == true {
                 ⎇ minfo.current == true {
-                    fg = 0;
+                    fg = 15;
                     bg = 3;
                 } ⎉ {
                     fg = 0;
@@ -1924,6 +1998,44 @@ rite render_copy_mode(grid, region, cm) {
     }
 }
 
+// Render help overlay centered in a pane region
+rite render_help_overlay(grid, region) {
+    ≔ help = build_help_text();
+    ≔ inner_x = region.x + 1;
+    ≔ inner_y = region.y + 1;
+    ≔ inner_w = region.w - 2;
+    ≔ inner_h = region.h - 2;
+
+    // Clear interior
+    ≔ mut r = 0;
+    ⟳ r < inner_h {
+        ≔ mut c = 0;
+        ⟳ c < inner_w {
+            Grid·set(grid, inner_y + r, inner_x + c, " ", 7, 0);
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // Render help text
+    ≔ mut row = 0;
+    ≔ mut col = 0;
+    ≔ mut i = 0;
+    ⟳ i < len(help) ∧ row < inner_h {
+        ≔ ch = to_string(char_at(help, i));
+        ⎇ ch == "\n" {
+            row = row + 1;
+            col = 0;
+        } ⎉ {
+            ⎇ col < inner_w {
+                Grid·set(grid, inner_y + row, inner_x + col, ch, 14, 0);
+                col = col + 1;
+            }
+        }
+        i = i + 1;
+    }
+}
+
 // ============================================================================
 // Section 6: Input Handling
 // ============================================================================
@@ -1951,7 +2063,7 @@ rite CopyModeState·new() {
 }
 
 // Input state machine
-rite InputState·new() {
+rite InputState·new(leader_key) {
     ≔ state = {
         leader_active: false,
         mouse_mode: true,
@@ -1959,6 +2071,9 @@ rite InputState·new() {
         in_escape: false,
         last_escape_buf: "",
         confirming_close: false,
+        confirming_quit: false,
+        showing_help: false,
+        leader_key: leader_key,
         copy_mode: CopyModeState·new()
     };
     ↩ state
@@ -2130,15 +2245,34 @@ rite process_input(input_state, byte, pane_count) {
         }
         ⎇ byte == 13  { ↩ "copy_yank" }
         ⎇ byte == 113 { ↩ "copy_exit" }
-        ⎇ byte == 27  { ↩ "copy_exit" }
+        ⎇ byte == 27  {
+            ⎇ cm.selecting == true {
+                cm.selecting = false;
+                ↩ "copy_render"
+            }
+            ↩ "copy_exit"
+        }
         ↩ "none"
     }
 
-    // Confirmation intercept — before any other input handling
+    // Quit confirmation intercept
+    ⎇ input_state.confirming_quit == true {
+        input_state.confirming_quit = false;
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "quit_confirm" }
+        ↩ "quit_cancel"
+    }
+
+    // Close confirmation intercept
     ⎇ input_state.confirming_close == true {
         input_state.confirming_close = false;
-        ⎇ byte == 121 { ↩ "close_confirm"; }
+        ⎇ byte == 121 ∨ byte == 89 ∨ byte == 13 { ↩ "close_confirm" }
         ↩ "close_cancel"
+    }
+
+    // Help dismiss — any key dismisses the overlay
+    ⎇ input_state.showing_help == true {
+        input_state.showing_help = false;
+        ↩ "help_dismiss"
     }
 
     ≔ mut action = "passthrough";
@@ -2147,6 +2281,12 @@ rite process_input(input_state, byte, pane_count) {
     ⎇ input_state.in_escape == true {
         input_state.escape_buf = input_state.escape_buf + from_char_code(byte);
         action = "none";
+        // Cap: prevent unbounded buffer growth
+        ⎇ len(input_state.escape_buf) > INPUT_ESC_BUF_MAX {
+            input_state.in_escape = false;
+            input_state.escape_buf = "";
+            ↩ "none"
+        }
         // Check for mouse SGR: ESC[<Btn;X;YM or m (buf starts with "[<")
         ⎇ (byte == 77 ∨ byte == 109) ∧ len(input_state.escape_buf) > 2 ∧ starts_with(input_state.escape_buf, "[<") == true {
             action = "mouse:" + input_state.escape_buf;
@@ -2171,10 +2311,10 @@ rite process_input(input_state, byte, pane_count) {
             // Leader mode handling
             ⎇ input_state.leader_active == true {
                 input_state.leader_active = false;
-                action = "none";
+                action = "unknown_leader";
                 ⎇ byte == 110 { action = "focus_next"; }
                 ⎇ byte == 112 { action = "focus_prev"; }
-                ⎇ byte == 113 { action = "quit"; }
+                ⎇ byte == 113 { action = "quit_request"; }
                 ⎇ byte == 107 { action = "scroll_up"; }
                 ⎇ byte == 106 { action = "scroll_down"; }
                 ⎇ byte == 99  { action = "create_terminal"; }
@@ -2184,9 +2324,12 @@ rite process_input(input_state, byte, pane_count) {
                 ⎇ byte == 83  { action = "save_profile"; }
                 ⎇ byte == 91  { action = "copy_enter"; }
                 ⎇ byte == 47  { action = "search_enter"; }
+                ⎇ byte == 63  { action = "help_toggle"; }
+                ⎇ byte == input_state.leader_key { action = "passthrough_leader"; }
+                ⎇ byte >= 49 ∧ byte <= 57 { action = "focus_" + to_string(byte - 48); }
             } ⎉ {
-                // Leader key (Ctrl-B)
-                ⎇ byte == LEADER_KEY {
+                // Leader key
+                ⎇ byte == input_state.leader_key {
                     input_state.leader_active = true;
                     action = "leader_activate";
                 }
@@ -2401,7 +2544,7 @@ rite main() {
     ≔ cfg = load_config();
 
     // Load startup pane types from profile (or default single terminal)
-    ≔ pane_types = load_profile();
+    ≔ pane_types = load_profile(cfg.max_panes);
     ≔ grid = recompute_grid(len(pane_types), 24, 80);
     ≔ mut grid_rows = grid.rows;
     ≔ mut grid_cols = grid.cols;
@@ -2444,7 +2587,7 @@ rite main() {
     ≔ mut screen = Grid·new(screen_h, screen_w);
 
     // Input state
-    ≔ input = InputState·new();
+    ≔ input = InputState·new(cfg.leader_key);
     ≔ mut focus = 0;
     ≔ mut running = true;
     ≔ mut zoomed = false;
@@ -2507,8 +2650,16 @@ rite main() {
                     ≔ action = process_input(input, byte, len(panes));
 
                     // Action dispatch: exactly ONE handler fires (⎇/⎉ chain)
-                    ⎇ action == "quit" {
+                    ⎇ action == "quit_request" {
+                        input.confirming_quit = true;
+                        render_status_bar_styled(screen, focus, panes, "confirm");
+                        render_status_bar(screen, " Quit Morgoth? y/n");
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ action == "quit_confirm" {
                         running = false;
+                    } ⎉ { ⎇ action == "quit_cancel" {
+                        render_status_bar_styled(screen, focus, panes, "normal");
+                        flush_dirty(screen);
                     } ⎉ { ⎇ action == "focus_next" {
                         focus = (focus + 1) % len(panes);
                         ≔ mut pi = 0;
@@ -2569,6 +2720,57 @@ rite main() {
                             ≔ esc_seq = from_char_code(27) + input.last_escape_buf;
                             Sys·write(panes[focus].master_fd, esc_seq, len(esc_seq));
                         }
+                    } ⎉ { ⎇ starts_with(action, "mouse:") == true {
+                        // Parse SGR mouse: action = "mouse:[<btn;col;rowM"
+                        ≔ mbuf = substring(action, 6, len(action));
+                        // Extract btn, col, row from "[<btn;col;rowM/m"
+                        ≔ mterm = to_string(char_at(mbuf, len(mbuf) - 1));
+                        ≔ mbody = substring(mbuf, 2, len(mbuf) - 1);
+                        ≔ mut mparts = [];
+                        ≔ mut mcur = "";
+                        ≔ mut mi = 0;
+                        ⟳ mi < len(mbody) {
+                            ≔ mch = to_string(char_at(mbody, mi));
+                            ⎇ mch == ";" {
+                                push(mparts, mcur);
+                                mcur = "";
+                            } ⎉ {
+                                mcur = mcur + mch;
+                            }
+                            mi = mi + 1;
+                        }
+                        push(mparts, mcur);
+                        ⎇ len(mparts) >= 3 {
+                            ≔ mbtn = parse_int(mparts[0]);
+                            ≔ mcol = parse_int(mparts[1]) - 1;
+                            ≔ mrow = parse_int(mparts[2]) - 1;
+                            // Button 0 press (mterm == "M"): change focus
+                            ⎇ mbtn == 0 ∧ mterm == "M" {
+                                ≔ clicked = find_pane_at(panes, mcol, mrow);
+                                ⎇ clicked >= 0 ∧ clicked != focus {
+                                    focus = clicked;
+                                    ≔ mut mpi = 0;
+                                    ⟳ mpi < len(panes) {
+                                        ≔ mt = pane_title(panes[mpi], mpi, focus);
+                                        ≔ mtc = border_colors(panes[mpi].pane_type, mpi == focus);
+                                        render_border(screen, panes[mpi].region, mt, mtc.border_fg, mtc.title_fg, mpi == focus);
+                                        mpi = mpi + 1;
+                                    }
+                                    render_status_bar_styled(screen, focus, panes, "normal");
+                                    flush_dirty(screen);
+                                }
+                                // Forward click to child PTY (interior coordinates)
+                                ⎇ panes[focus].master_fd >= 0 {
+                                    ≔ mr = panes[focus].region;
+                                    ≔ icol = mcol - mr.x - 1;
+                                    ≔ irow = mrow - mr.y - 1;
+                                    ⎇ icol >= 0 ∧ icol < mr.w - 2 ∧ irow >= 0 ∧ irow < mr.h - 2 {
+                                        ≔ fwd = from_char_code(27) + "[<" + to_string(mbtn) + ";" + to_string(icol + 1) + ";" + to_string(irow + 1) + mterm;
+                                        Sys·write(panes[focus].master_fd, fwd, len(fwd));
+                                    }
+                                }
+                            }
+                        }
                     } ⎉ { ⎇ action == "create_terminal" {
                         ⎇ len(panes) < cfg.max_panes {
                             ≔ tmp_region = Region·new(0, 0, 40, 12);
@@ -2580,6 +2782,9 @@ rite main() {
                             grid_cols = gl.grid_cols;
                             zoomed = false;
                             render_status_bar_styled(screen, focus, panes, "normal");
+                            flush_dirty(screen);
+                        } ⎉ {
+                            render_status_bar(screen, " Max panes (" + to_string(cfg.max_panes) + ") reached");
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "create_monitor" {
@@ -2594,11 +2799,18 @@ rite main() {
                             zoomed = false;
                             render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
+                        } ⎉ {
+                            render_status_bar(screen, " Max panes (" + to_string(cfg.max_panes) + ") reached");
+                            flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "close_pane" {
                         ⎇ len(panes) > 1 {
                             input.confirming_close = true;
                             render_status_bar_styled(screen, focus, panes, "confirm");
+                            render_status_bar(screen, " Close pane? y/n");
+                            flush_dirty(screen);
+                        } ⎉ {
+                            render_status_bar(screen, " Last pane. ^B+q to quit.");
                             flush_dirty(screen);
                         }
                     } ⎉ { ⎇ action == "close_confirm" {
@@ -2758,7 +2970,56 @@ rite main() {
                         render_border(screen, panes[focus].region, se_title, sec.border_fg, sec.title_fg, true);
                         render_status_bar_styled(screen, focus, panes, "search");
                         flush_dirty(screen);
-                    } } } } } } } } } } } } } } } } } } }
+                    } ⎉ { ⎇ action == "help_toggle" {
+                        input.showing_help = true;
+                        render_help_overlay(screen, panes[focus].region);
+                        ≔ hc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, "[HELP]", hc.border_fg, hc.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "normal");
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ action == "help_dismiss" {
+                        vterm_blit(panes[focus].vterm, screen, panes[focus].region);
+                        ≔ hdc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), hdc.border_fg, hdc.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "normal");
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ action == "passthrough_leader" {
+                        ⎇ panes[focus].master_fd >= 0 {
+                            ≔ lch = from_char_code(input.leader_key);
+                            Sys·write(panes[focus].master_fd, lch, 1);
+                        }
+                    } ⎉ { ⎇ action == "leader_activate" {
+                        render_status_bar_styled(screen, focus, panes, "leader");
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ action == "unknown_leader" {
+                        render_status_bar(screen, " Unknown key. ^B+? for help.");
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ starts_with(action, "focus_") == true ∧ len(action) > 6 {
+                        // Direct pane focus: focus_1 through focus_9
+                        ≔ digit_str = substring(action, 6, len(action));
+                        ≔ mut new_focus = -1;
+                        ⎇ digit_str == "1" { new_focus = 0; }
+                        ⎇ digit_str == "2" { new_focus = 1; }
+                        ⎇ digit_str == "3" { new_focus = 2; }
+                        ⎇ digit_str == "4" { new_focus = 3; }
+                        ⎇ digit_str == "5" { new_focus = 4; }
+                        ⎇ digit_str == "6" { new_focus = 5; }
+                        ⎇ digit_str == "7" { new_focus = 6; }
+                        ⎇ digit_str == "8" { new_focus = 7; }
+                        ⎇ digit_str == "9" { new_focus = 8; }
+                        ⎇ new_focus >= 0 ∧ new_focus < len(panes) {
+                            focus = new_focus;
+                            ≔ mut dpi = 0;
+                            ⟳ dpi < len(panes) {
+                                ≔ dt = pane_title(panes[dpi], dpi, focus);
+                                ≔ dtc = border_colors(panes[dpi].pane_type, dpi == focus);
+                                render_border(screen, panes[dpi].region, dt, dtc.border_fg, dtc.title_fg, dpi == focus);
+                                dpi = dpi + 1;
+                            }
+                            render_status_bar_styled(screen, focus, panes, "normal");
+                            flush_dirty(screen);
+                        }
+                    } } } } } } } } } } } } } } } } } } } } } } } } } } } }
 
                     bi = bi + 1;
                 }
