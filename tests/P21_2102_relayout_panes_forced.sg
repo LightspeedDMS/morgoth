@@ -1,0 +1,66 @@
+// Test: relayout_panes_forced divides space according to forced grid dimensions
+// Spec: Phase 21 - Manual Pane Splitting
+// Priority: P21
+
+rite Region·new(x, y, w, h) {
+    ↩ { x: x, y: y, w: w, h: h }
+}
+
+rite layout_grid(rows, cols, screen_w, screen_h) {
+    ≔ pane_w = screen_w / cols;
+    ≔ pane_h = screen_h / rows;
+    ≔ mut regions = [];
+    ≔ mut r = 0;
+    ⟳ r < rows {
+        ≔ mut c = 0;
+        ⟳ c < cols {
+            ≔ x = c * pane_w;
+            ≔ y = r * pane_h;
+            push(regions, Region·new(x, y, pane_w, pane_h));
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+    ↩ regions
+}
+
+rite main() {
+    ≔ screen_w = 80;
+    ≔ screen_h = 24;
+
+    // Forced 1x2 grid: each pane gets half the width
+    ≔ regions_1x2 = layout_grid(1, 2, screen_w, screen_h);
+
+    ⎇ len(regions_1x2) == 2 {
+        println("forced_1x2_count: OK");
+    } ⎉ {
+        println("forced_1x2_count: FAILED got=" + to_string(len(regions_1x2)));
+    }
+
+    ⎇ regions_1x2[0].w == 40 ∧ regions_1x2[1].w == 40 {
+        println("forced_1x2_widths: OK");
+    } ⎉ {
+        println("forced_1x2_widths: FAILED w0=" + to_string(regions_1x2[0].w) + " w1=" + to_string(regions_1x2[1].w));
+    }
+
+    ⎇ regions_1x2[0].x == 0 ∧ regions_1x2[1].x == 40 {
+        println("forced_1x2_positions: OK");
+    } ⎉ {
+        println("forced_1x2_positions: FAILED x0=" + to_string(regions_1x2[0].x) + " x1=" + to_string(regions_1x2[1].x));
+    }
+
+    // Forced 2x1 grid: each pane gets half the height
+    ≔ regions_2x1 = layout_grid(2, 1, screen_w, screen_h);
+
+    ⎇ regions_2x1[0].h == 12 ∧ regions_2x1[1].h == 12 {
+        println("forced_2x1_heights: OK");
+    } ⎉ {
+        println("forced_2x1_heights: FAILED h0=" + to_string(regions_2x1[0].h) + " h1=" + to_string(regions_2x1[1].h));
+    }
+
+    ⎇ regions_2x1[0].y == 0 ∧ regions_2x1[1].y == 12 {
+        println("forced_2x1_positions: OK");
+    } ⎉ {
+        println("forced_2x1_positions: FAILED y0=" + to_string(regions_2x1[0].y) + " y1=" + to_string(regions_2x1[1].y));
+    }
+}
