@@ -1186,10 +1186,12 @@ rite load_profile(max_panes) {
     push(panes, "terminal");
     ⎇ fs_exists(profile_path) == true {
         ≔ raw = fs_read(profile_path);
-        ≔ j = json_parse(raw);
-        ≔ j_panes = map_get(j, "panes");
-        ⎇ j_panes != null ∧ len(j_panes) > 0 {
-            panes = j_panes;
+        // Profile format is a plain JSON array: ["terminal","monitor"]
+        ⎇ len(raw) > 0 ∧ starts_with(raw, "[") == true {
+            ≔ j_panes = json_parse(raw);
+            ⎇ j_panes != null ∧ len(j_panes) > 0 {
+                panes = j_panes;
+            }
         }
     }
     // Clamp to max_panes
@@ -1218,8 +1220,7 @@ rite save_profile(panes) {
         push(types, panes[i].pane_type);
         i = i + 1;
     }
-    ≔ profile = { panes: types };
-    ≔ json = json_stringify(profile);
+    ≔ json = json_stringify(types);
     fs_write(dir_path + "/default.json", json);
 }
 
@@ -1399,10 +1400,11 @@ rite load_named_profile(name, max_panes) {
     push(panes, "terminal");
     ⎇ fs_exists(profile_path) == true {
         ≔ raw = fs_read(profile_path);
-        ≔ j = json_parse(raw);
-        ≔ j_panes = map_get(j, "panes");
-        ⎇ j_panes != null ∧ len(j_panes) > 0 {
-            panes = j_panes;
+        ⎇ len(raw) > 0 ∧ starts_with(raw, "[") == true {
+            ≔ j_panes = json_parse(raw);
+            ⎇ j_panes != null ∧ len(j_panes) > 0 {
+                panes = j_panes;
+            }
         }
     }
     ⎇ len(panes) > max_panes {
@@ -1430,8 +1432,7 @@ rite save_named_profile(name, panes) {
         push(types, panes[i].pane_type);
         i = i + 1;
     }
-    ≔ profile = {panes: types};
-    ≔ json = json_stringify(profile);
+    ≔ json = json_stringify(types);
     fs_write(dir_path + "/" + name + ".json", json);
 }
 
