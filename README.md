@@ -1,180 +1,186 @@
 # Morgoth
 
-A TUI terminal multiplexer for managing multiple concurrent Claude Code
-instances, written in [Sigil](https://github.com/Daemoniorum-LLC/sigil-lang).
+A TUI terminal multiplexer purpose-built for Claude Code, written in
+[Sigil](https://github.com/Daemoniorum-LLC/sigil-lang).
 
 ```
-┌──Claude Code──────┬──System Monitor──┬──Claude Code──────┐
-│                    │                  │                    │
-│  Instance 1        │  Context: 42%    │  Instance 3        │
-│                    │  Tokens: 12.4k   │                    │
-│  > implementing    │  Session: $0.34  │  > reviewing PR    │
-│    auth module...  │                  │    #127...         │
-├──Claude Code──────┼──Claude Code─────┼──Claude Code──────┤
-│                    │                  │                    │
-│  Instance 4        │  Instance 5      │  Instance 6        │
-│                    │                  │                    │
-│  > running tests   │  > idle          │  > refactoring     │
-│                    │                  │    database...     │
-└───────────────────┴──────────────────┴───────────────────┘
- Morgoth v0.1.0 | Ctrl-B: leader | q: quit | n/p: focus
+╔═[1:bash]══════════════╦═[2:System Monitor]═════╗
+║                        ║ Branch:  main           ║
+║  > implementing        ║ Context: 42%            ║
+║    auth module...      ║ Tokens:  12.4k          ║
+║                        ║ Session: $0.34          ║
+╠═[3:bash]══════════════╬═[4:bash]════════════════╣
+║                        ║                         ║
+║  > running tests       ║  > reviewing PR #127    ║
+║                        ║                         ║
+╚═══════════════════════╩═════════════════════════╝
+ NORMAL  [1/4] terminal │ ^B+c: new  ^B+x: close  ^B+z: zoom  Morgoth v0.1.0
 ```
 
 ## Why
 
-Claude Code power users run multiple instances simultaneously. Current options
-fall short:
-
-- **Multiple tabs** -- can't view instances side-by-side
-- **Multiple windows** -- competes with other apps for screen real estate
-- **Generic multiplexers** (tmux, zellij) -- not Claude-aware; no metadata surfacing
-
-Morgoth is purpose-built: a Claude-Code-aware multiplexer that understands what
-it's hosting and can surface instance metadata (context window usage, session
-cost, token consumption) alongside the instances themselves.
-
-## Status
-
-**Phase 8 complete** -- daily-driver capable terminal multiplexer.
-
-| Component | Status | Phase |
-|-----------|--------|-------|
-| Layout engine (grid-based tiling) | Done | 1 |
-| Screen buffer (diff-based rendering) | Done | 1 |
-| PTY management (open, spawn, relay) | Done | 1 |
-| Input routing (leader key, mouse) | Done | 1 |
-| Signal handling + graceful shutdown | Done | 1 |
-| VTerm terminal emulator (ANSI state machine) | Done | 2 |
-| System monitor plugin | Done | 2 |
-| JSON configuration (~/.morgoth/config.json) | Done | 2 |
-| Scrollback buffer with eviction | Done | 2 |
-| DEC private modes + alternate screen | Done | 3 |
-| OSC/DCS sequence handling + titles | Done | 3 |
-| Extended CSI sequences (IL/DL/@/P/X/E/F) | Done | 3 |
-| Input escape forwarding (arrow keys, mouse SGR) | Done | 3 |
-| Native termios + raw mode | Done | 4 |
-| Real signal handling (sigaction) | Done | 4 |
-| Real PTY spawning (openpty/fork/exec) | Done | 5 |
-| Terminal resize propagation (SIGWINCH) | Done | 6 |
-| Dynamic pane management (create/close/zoom) | Done | 7 |
-| Vim-style copy/paste with OSC 52 clipboard | Done | 8 |
-| Cross-instance communication | Future |
+Claude Code power users run multiple instances simultaneously. Generic
+multiplexers (tmux, zellij) work but aren't Claude-aware. Morgoth surfaces
+Claude session metadata — context usage, token consumption, cost — in a
+dedicated monitor pane alongside your terminals.
 
 ## Requirements
 
-- [Sigil](https://github.com/Daemoniorum-LLC/sigil-lang) compiler (Rust
-  backend, `native` feature)
 - Linux (PTY and signal primitives are Linux-specific)
+- [Sigil](https://github.com/Daemoniorum-LLC/sigil-lang) compiler built with
+  `native` feature
+- tmux (recommended — enables `claude-pipe.sh` integration)
 
-## Build & Run
+## Installation
 
 ```bash
-# Build the Sigil compiler (if not already built)
-cd ../sigil-lang/parser
+# 1. Build the Sigil compiler
+cd sigil-lang/parser
 cargo build --release --no-default-features --features jit,native,protocols
 
-# Run Morgoth
-./target/release/sigil run ../../morgoth/src/morgoth.sg
+# 2. Clone Morgoth (if separate)
+git clone https://github.com/Daemoniorum-LLC/morgoth
 ```
 
-## Architecture
+## Running
 
-Morgoth is a single-file Sigil application (`src/morgoth.sg`, ~2400 lines)
-organized into sections:
+```bash
+# Recommended: use the launch wrapper (handles terminal restore on crash)
+./morgoth/launch.sh
 
-| Section | Purpose |
-|---------|---------|
-| Constants | Version, leader key, escape sequences, box-drawing chars |
-| Data Structures | Cell, Region, Pane (with PTY + VTerm + child process) |
-| Layout Engine | Grid calculation with aspect-ratio-optimized tiling |
-| Screen Buffer | Flat cell array with dirty tracking |
-| VTerm Emulator | ANSI state machine (normal/escape/CSI/OSC/DCS modes) |
-| Copy Mode | Text extraction, selection, cursor movement, clipboard |
-| Rendering | Borders, content, status bar, copy overlay, diff flush |
-| Input Handling | Leader key, copy mode intercept, close confirmation |
-| Config | JSON config loader (~/.morgoth/config.json) with defaults |
-| Monitor Plugin | System stats from ~/.claude/stats-cache.json |
-| Terminal Control | Alt screen, raw mode, mouse tracking, termios |
-| Signal Handling | SIGTERM, SIGINT, SIGWINCH via sigaction |
-| Pane Management | Create, close, zoom, relayout |
-| Shutdown | SIGTERM -> wait -> SIGKILL -> restore terminal |
-| Event Loop | Synchronous poll loop with freeze guard |
-
-### Event Loop
-
-```
-while running:
-    check signals (SIGTERM, SIGINT, SIGWINCH)
-    if SIGWINCH: resize all panes + propagate to PTYs
-    if poll_fd(stdin, 0):
-        read input -> process through state machine
-        copy mode intercept -> leader key -> passthrough to PTY
-    for each pane (respecting zoom + copy freeze guards):
-        if terminal pane && poll_fd(pane.master_fd, 0):
-            read PTY output -> vterm_feed -> render into region
-        if monitor pane && refresh interval elapsed:
-            read stats -> render monitor
-    flush dirty cells to terminal
-    sleep(poll_interval)
+# Direct (no crash protection)
+sigil-lang/parser/target/release/sigil run morgoth/src/morgoth.sg
 ```
 
-### Key Bindings
+When running inside tmux, `launch.sh` also starts `bin/claude-pipe.sh` in
+the background. This watches `~/.morgoth/claude-in.txt` and injects yanked
+text from copy mode into the focused Claude Code pane automatically.
 
-**Leader key:** `Ctrl-B`
+## Key Bindings
 
-| Key | Action |
-|-----|--------|
-| `Ctrl-B` | Activate leader mode |
-| `Ctrl-B` `n` | Focus next pane |
-| `Ctrl-B` `p` | Focus previous pane |
-| `Ctrl-B` `c` | Create new terminal pane |
-| `Ctrl-B` `m` | Create new monitor pane |
-| `Ctrl-B` `x` | Close focused pane (with confirmation) |
-| `Ctrl-B` `z` | Toggle zoom on focused pane |
-| `Ctrl-B` `k` | Scroll up (scrollback) |
-| `Ctrl-B` `j` | Scroll down (scrollback) |
-| `Ctrl-B` `[` | Enter copy mode |
-| `Ctrl-B` `q` | Quit |
+**Leader key:** `Ctrl-B` (configurable in `config.json`)
+
+### Navigation
+
+| Binding | Action |
+|---------|--------|
+| `^B n` / `^B p` | Focus next / previous pane |
+| `^B 1`–`^B 9` | Focus pane by number |
 | Mouse click | Focus clicked pane |
 
-**Copy mode** (vim-style):
+### Pane Management
 
-| Key | Action |
-|-----|--------|
+| Binding | Action |
+|---------|--------|
+| `^B c` | Create terminal pane |
+| `^B m` | Create monitor pane |
+| `^B x` | Close focused pane (confirmation required) |
+| `^B z` | Zoom / unzoom focused pane |
+| `^B \|` | Split: add pane, force +1 column |
+| `^B -` | Split: add pane, force +1 row |
+
+### Scrollback
+
+| Binding | Action |
+|---------|--------|
+| `^B k` | Scroll up |
+| `^B j` | Scroll down |
+| `^B /` | Enter scrollback search |
+
+### Copy Mode (`^B [`)
+
+| Binding | Action |
+|---------|--------|
 | `h` `j` `k` `l` | Cursor movement |
 | `0` / `$` | Beginning / end of line |
 | `w` / `b` | Word forward / backward |
 | `g` / `G` | First / last line |
 | `Ctrl-U` / `Ctrl-D` | Half-page up / down |
-| `Space` | Start/cancel character selection |
+| `Space` | Start / cancel character selection |
 | `V` | Toggle line selection mode |
-| `Enter` | Yank selection to clipboard (OSC 52) |
+| `Enter` | Yank to clipboard (OSC 52 + `claude-in.txt`) |
+| `/` | Enter search |
+| `n` / `N` | Next / previous search match |
 | `q` / `ESC` | Exit copy mode |
+
+### Profiles + Session
+
+| Binding | Action |
+|---------|--------|
+| `^B S` | Save current pane layout to active profile |
+| `^B p` | Open profile picker |
+
+### Other
+
+| Binding | Action |
+|---------|--------|
+| `^B ?` | Show help overlay |
+| `^B ^B` | Send literal `Ctrl-B` to focused pane |
+| `^B q` | Quit (confirmation required) |
+
+## Configuration
+
+Morgoth reads `~/.morgoth/config.json` on startup. All keys are optional.
+
+```json
+{
+  "shell": "/bin/bash",
+  "leader_key": 2,
+  "scrollback_lines": 1000,
+  "max_panes": 12,
+  "hmr": false,
+  "session_restore": true,
+  "bindings": {
+    "new_terminal": "c",
+    "new_monitor":  "m",
+    "close_pane":   "x",
+    "zoom_toggle":  "z",
+    "copy_mode":    "[",
+    "save_profile": "S",
+    "help":         "?"
+  }
+}
+```
+
+**`leader_key`** is the ASCII byte of the leader character (`2` = `Ctrl-B`).
+
+## Profiles
+
+Pane layouts are saved in `~/.morgoth/profiles/`. The active profile at
+startup is `default.json`. Use `^B+p` to load a different profile; use
+`^B+S` to save the current layout.
+
+Profile files contain a JSON array of pane types:
+
+```json
+["terminal", "monitor", "terminal"]
+```
+
+## Claude Code Integration
+
+The system monitor pane reads from:
+- `~/.claude/stats-cache.json` — context usage, token count, session cost
+- `~/.claude/current-task` — active task description (if present)
+
+It also runs `git rev-parse --abbrev-ref HEAD` to show the current branch.
+
+When Morgoth runs inside tmux, `bin/claude-pipe.sh` bridges copy mode to
+Claude Code's input: yanking text (`Enter` in copy mode) writes to
+`~/.morgoth/claude-in.txt`, and the pipe script injects it as literal
+keystrokes into the focused Claude Code pane. The text appears in Claude's
+input box ready to edit and submit.
 
 ## Tests
 
 ```bash
-# Run all tests (110 tests)
+# Run all 200 tests
 ./run_tests.sh
 
-# Run a specific phase
+# Filter by phase
 ./run_tests.sh --filter P8
+./run_tests.sh --filter P15
 ```
-
-## Roadmap
-
-### Phase 9 -- Cross-Instance Communication
-- Send commands/context between Claude Code instances
-- Plugin system for custom tile types
-- Orchestration capabilities
-
-## Language
-
-Morgoth is written in Sigil as a dogfooding exercise. It stress-tests Sigil's
-capabilities for systems-level TUI work and has driven expansion of the stdlib
-with native primitives for PTY management, terminal control, signal handling,
-and process spawning across Phases 0--5.
 
 ## License
 
-Proprietary -- Daemoniorum LLC
+Proprietary — Daemoniorum LLC
