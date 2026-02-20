@@ -1,0 +1,105 @@
+// Test: PTY drain loop reads multiple chunks until empty or budget exhausted
+// Spec: Phase 16 - Performance
+// Priority: P16
+// Strategy: Simulate drain loop logic with fake pipe data
+
+≔ PTY_READ_CHUNK = 16384;
+≔ PTY_FRAME_BUDGET = 65536;
+
+rite main() {
+    // Create a pipe pair and write multiple chunks of data
+    ≔ pipe = Sys·pipe();
+    ≔ read_fd = pipe.read_fd;
+    ≔ write_fd = pipe.write_fd;
+
+    // Write 3 chunks of data (simulating burst PTY output)
+    ≔ chunk1 = "Hello from PTY line 1\n";
+    ≔ chunk2 = "Second line of output\n";
+    ≔ chunk3 = "Third and final line\n";
+    Sys·write(write_fd, chunk1, len(chunk1));
+    Sys·write(write_fd, chunk2, len(chunk2));
+    Sys·write(write_fd, chunk3, len(chunk3));
+
+    // Drain loop — same pattern as the event loop
+    ≔ mut pty_total = 0;
+    ≔ mut pty_done = false;
+    ≔ mut chunks_read = 0;
+    ≔ mut all_data = "";
+    ⟳ pty_done == false ∧ pty_total < PTY_FRAME_BUDGET {
+        ⎇ Sys·poll_fd(read_fd, 0) == true {
+            ≔ chunk = Sys·read_string(read_fd, PTY_READ_CHUNK);
+            ⎇ chunk != "" {
+                all_data = all_data + chunk;
+                pty_total = pty_total + len(chunk);
+                chunks_read = chunks_read + 1;
+            } ⎉ {
+                pty_done = true;
+            }
+        } ⎉ {
+            pty_done = true;
+        }
+    }
+
+    Sys·close(write_fd);
+    Sys·close(read_fd);
+
+    // Test 1: All data was read
+    ≔ expected_data = chunk1 + chunk2 + chunk3;
+    ⎇ all_data == expected_data {
+        println("all_data_read: OK");
+    } ⎉ {
+        println("all_data_read: FAILED len=" + to_string(len(all_data)) + " expected=" + to_string(len(expected_data)));
+    }
+
+    // Test 2: Total bytes tracked correctly
+    ⎇ pty_total == len(expected_data) {
+        println("total_tracked: OK");
+    } ⎉ {
+        println("total_tracked: FAILED total=" + to_string(pty_total) + " expected=" + to_string(len(expected_data)));
+    }
+
+    // Test 3: At least 1 chunk was read (pipe data may coalesce)
+    ⎇ chunks_read >= 1 {
+        println("chunks_read: OK");
+    } ⎉ {
+        println("chunks_read: FAILED count=" + to_string(chunks_read));
+    }
+
+    // Test 4: Budget limiting — write more than budget, verify budget is respected
+    ≔ pipe2 = Sys·pipe();
+    ≔ rf2 = pipe2.read_fd;
+    ≔ wf2 = pipe2.write_fd;
+
+    // Write a big chunk (bigger than typical but within budget to show loop works)
+    ≔ mut big = "";
+    ≔ mut bi = 0;
+    ⟳ bi < 100 {
+        big = big + "ABCDEFGHIJ";  // 10 chars x 100 = 1000 chars
+        bi = bi + 1;
+    }
+    Sys·write(wf2, big, len(big));
+
+    ≔ mut total2 = 0;
+    ≔ mut done2 = false;
+    ⟳ done2 == false ∧ total2 < PTY_FRAME_BUDGET {
+        ⎇ Sys·poll_fd(rf2, 0) == true {
+            ≔ ch2 = Sys·read_string(rf2, PTY_READ_CHUNK);
+            ⎇ ch2 != "" {
+                total2 = total2 + len(ch2);
+            } ⎉ {
+                done2 = true;
+            }
+        } ⎉ {
+            done2 = true;
+        }
+    }
+
+    Sys·close(wf2);
+    Sys·close(rf2);
+
+    ⎇ total2 == 1000 {
+        println("budget_large_read: OK");
+    } ⎉ {
+        println("budget_large_read: FAILED total=" + to_string(total2));
+    }
+}

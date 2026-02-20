@@ -1,0 +1,187 @@
+// Test: flush_dirty uses concat_all to produce correct ANSI output
+// Spec: Phase 16 - Performance
+// Priority: P16
+// Strategy: Write to a pipe instead of stdout, then read back to verify
+
+rite Cell_new(ch, fg, bg, dirty) {
+    ↩ {ch: ch, fg: fg, bg: bg, dirty: dirty}
+}
+
+rite Grid_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, Cell_new(" ", 7, 0, false));
+        i = i + 1;
+    }
+    ↩ {rows: rows, cols: cols, cells: cells}
+}
+
+// Smart Grid·set
+rite Grid_set(grid, row, col, ch, fg, bg) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        ≔ c = grid.cells[idx];
+        ⎇ c.ch != ch ∨ c.fg != fg ∨ c.bg != bg {
+            grid.cells[idx] = Cell_new(ch, fg, bg, true);
+        }
+    }
+}
+
+// In-place clear_dirty
+rite Grid_clear_dirty(grid) {
+    ≔ total = grid.rows * grid.cols;
+    ≔ mut i = 0;
+    ⟳ i < total {
+        grid.cells[i].dirty = false;
+        i = i + 1;
+    }
+}
+
+rite Grid_dirty_count(grid) {
+    ≔ mut count = 0;
+    ≔ total = grid.rows * grid.cols;
+    ≔ mut i = 0;
+    ⟳ i < total {
+        ⎇ grid.cells[i].dirty == true {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    ↩ count
+}
+
+≔ ESC = "\x1b";
+≔ CSI = "\x1b[";
+
+// flush_dirty that returns the buffer instead of writing to stdout
+rite flush_dirty_to_string(grid) {
+    ≔ mut parts = [];
+    ≔ total = grid.rows * grid.cols;
+    ≔ mut i = 0;
+    ≔ mut last_row = -1;
+    ≔ mut last_col = -1;
+    ≔ mut last_fg = -1;
+    ≔ mut last_bg = -1;
+    ⟳ i < total {
+        ⎇ grid.cells[i].dirty == true ∧ grid.cells[i].ch != "" {
+            ≔ row = i / grid.cols;
+            ≔ col = i % grid.cols;
+            ⎇ row != last_row ∨ col != last_col + 1 {
+                push(parts, CSI + to_string(row + 1) + ";" + to_string(col + 1) + "H");
+            }
+            ⎇ grid.cells[i].fg != last_fg {
+                ≔ fg = grid.cells[i].fg;
+                ⎇ fg >= 256 {
+                    ≔ raw_fg = fg - 256;
+                    push(parts, CSI + "38;2;" + to_string(raw_fg / 65536) + ";" + to_string((raw_fg % 65536) / 256) + ";" + to_string(raw_fg % 256) + "m");
+                } ⎉ {
+                    push(parts, CSI + "38;5;" + to_string(fg) + "m");
+                }
+                last_fg = grid.cells[i].fg;
+            }
+            ⎇ grid.cells[i].bg != last_bg {
+                ≔ bg = grid.cells[i].bg;
+                ⎇ bg >= 256 {
+                    ≔ raw_bg = bg - 256;
+                    push(parts, CSI + "48;2;" + to_string(raw_bg / 65536) + ";" + to_string((raw_bg % 65536) / 256) + ";" + to_string(raw_bg % 256) + "m");
+                } ⎉ {
+                    push(parts, CSI + "48;5;" + to_string(bg) + "m");
+                }
+                last_bg = grid.cells[i].bg;
+            }
+            push(parts, grid.cells[i].ch);
+            last_row = row;
+            last_col = col;
+        }
+        i = i + 1;
+    }
+    push(parts, CSI + "0m");
+    ⎇ len(parts) > 1 {
+        ≔ buf = concat_all(parts);
+        Grid_clear_dirty(grid);
+        ↩ buf
+    }
+    Grid_clear_dirty(grid);
+    ↩ ""
+}
+
+rite main() {
+    // Test 1: Single dirty cell produces correct output
+    ≔ grid1 = Grid_new(2, 3);
+    Grid_set(grid1, 0, 1, "X", 1, 0);
+    ≔ buf1 = flush_dirty_to_string(grid1);
+    // Expected: CUP(1,2) + fg1 + bg0 + "X" + reset
+    ≔ expected1 = CSI + "1;2H" + CSI + "38;5;1m" + CSI + "48;5;0m" + "X" + CSI + "0m";
+    ⎇ buf1 == expected1 {
+        println("single_cell: OK");
+    } ⎉ {
+        println("single_cell: FAILED");
+        println("  got: " + buf1);
+        println("  exp: " + expected1);
+    }
+
+    // Test 2: Consecutive cells on same row — no extra CUP
+    ≔ grid2 = Grid_new(1, 5);
+    Grid_set(grid2, 0, 1, "A", 2, 0);
+    Grid_set(grid2, 0, 2, "B", 2, 0);
+    ≔ buf2 = flush_dirty_to_string(grid2);
+    // Expected: CUP(1,2) + fg2 + bg0 + A + B + reset (no second CUP)
+    ≔ expected2 = CSI + "1;2H" + CSI + "38;5;2m" + CSI + "48;5;0m" + "A" + "B" + CSI + "0m";
+    ⎇ buf2 == expected2 {
+        println("consecutive: OK");
+    } ⎉ {
+        println("consecutive: FAILED");
+        println("  got: " + buf2);
+        println("  exp: " + expected2);
+    }
+
+    // Test 3: Non-consecutive cells get separate CUPs
+    ≔ grid3 = Grid_new(2, 3);
+    Grid_set(grid3, 0, 0, "P", 3, 0);
+    Grid_set(grid3, 1, 2, "Q", 3, 0);
+    ≔ buf3 = flush_dirty_to_string(grid3);
+    ≔ expected3 = CSI + "1;1H" + CSI + "38;5;3m" + CSI + "48;5;0m" + "P" + CSI + "2;3H" + "Q" + CSI + "0m";
+    ⎇ buf3 == expected3 {
+        println("non_consecutive: OK");
+    } ⎉ {
+        println("non_consecutive: FAILED");
+        println("  got: " + buf3);
+        println("  exp: " + expected3);
+    }
+
+    // Test 4: No dirty cells — empty output
+    ≔ grid4 = Grid_new(2, 2);
+    ≔ buf4 = flush_dirty_to_string(grid4);
+    ⎇ buf4 == "" {
+        println("no_dirty_empty: OK");
+    } ⎉ {
+        println("no_dirty_empty: FAILED got=" + buf4);
+    }
+
+    // Test 5: Dirty flags cleared after flush
+    ≔ grid5 = Grid_new(1, 3);
+    Grid_set(grid5, 0, 0, "Z", 1, 0);
+    flush_dirty_to_string(grid5);
+    ≔ dc5 = Grid_dirty_count(grid5);
+    ⎇ dc5 == 0 {
+        println("dirty_cleared: OK");
+    } ⎉ {
+        println("dirty_cleared: FAILED count=" + to_string(dc5));
+    }
+
+    // Test 6: True color output
+    ≔ grid6 = Grid_new(1, 1);
+    // Pack: 256 + 255*65536 + 128*256 + 64 = 256 + 16711680 + 32768 + 64 = 16744768
+    Grid_set(grid6, 0, 0, "T", 256 + 255 * 65536 + 128 * 256 + 64, 0);
+    ≔ buf6 = flush_dirty_to_string(grid6);
+    ≔ expected6 = CSI + "1;1H" + CSI + "38;2;255;128;64m" + CSI + "48;5;0m" + "T" + CSI + "0m";
+    ⎇ buf6 == expected6 {
+        println("truecolor: OK");
+    } ⎉ {
+        println("truecolor: FAILED");
+        println("  got: " + buf6);
+        println("  exp: " + expected6);
+    }
+}

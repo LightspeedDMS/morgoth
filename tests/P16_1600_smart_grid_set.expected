@@ -1,0 +1,7 @@
+initial_clean: OK
+set_different_dirty: OK
+set_same_not_dirty: OK
+change_fg_dirty: OK
+change_bg_dirty: OK
+change_ch_dirty: OK
+mixed_dirty_count: OK

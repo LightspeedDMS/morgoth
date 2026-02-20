@@ -1,0 +1,6 @@
+single_cell: OK
+consecutive: OK
+non_consecutive: OK
+no_dirty_empty: OK
+dirty_cleared: OK
+truecolor: OK

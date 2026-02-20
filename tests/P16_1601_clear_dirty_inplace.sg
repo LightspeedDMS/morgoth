@@ -1,0 +1,95 @@
+// Test: Grid·clear_dirty preserves cell content, clears dirty flag (in-place)
+// Spec: Phase 16 - Performance
+// Priority: P16
+
+rite Cell_new(ch, fg, bg, dirty) {
+    ↩ {ch: ch, fg: fg, bg: bg, dirty: dirty}
+}
+
+rite Grid_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, Cell_new(" ", 7, 0, true));
+        i = i + 1;
+    }
+    ↩ {rows: rows, cols: cols, cells: cells}
+}
+
+// In-place clear_dirty — no allocations
+rite Grid_clear_dirty(grid) {
+    ≔ total = grid.rows * grid.cols;
+    ≔ mut i = 0;
+    ⟳ i < total {
+        grid.cells[i].dirty = false;
+        i = i + 1;
+    }
+}
+
+rite Grid_dirty_count(grid) {
+    ≔ mut count = 0;
+    ≔ total = grid.rows * grid.cols;
+    ≔ mut i = 0;
+    ⟳ i < total {
+        ⎇ grid.cells[i].dirty == true {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    ↩ count
+}
+
+rite main() {
+    ≔ grid = Grid_new(3, 4);
+
+    // Set some cells to specific content
+    grid.cells[0] = Cell_new("A", 1, 2, true);
+    grid.cells[5] = Cell_new("B", 3, 4, true);
+    grid.cells[11] = Cell_new("C", 5, 6, true);
+
+    // Test 1: Dirty count before clear
+    ≔ dc1 = Grid_dirty_count(grid);
+    ⎇ dc1 == 12 {
+        println("dirty_before: OK");
+    } ⎉ {
+        println("dirty_before: FAILED count=" + to_string(dc1));
+    }
+
+    // Clear dirty flags
+    Grid_clear_dirty(grid);
+
+    // Test 2: All dirty flags cleared
+    ≔ dc2 = Grid_dirty_count(grid);
+    ⎇ dc2 == 0 {
+        println("dirty_after: OK");
+    } ⎉ {
+        println("dirty_after: FAILED count=" + to_string(dc2));
+    }
+
+    // Test 3: Cell content preserved after clear
+    ⎇ grid.cells[0].ch == "A" ∧ grid.cells[0].fg == 1 ∧ grid.cells[0].bg == 2 {
+        println("content_preserved_0: OK");
+    } ⎉ {
+        println("content_preserved_0: FAILED ch=" + grid.cells[0].ch);
+    }
+
+    ⎇ grid.cells[5].ch == "B" ∧ grid.cells[5].fg == 3 ∧ grid.cells[5].bg == 4 {
+        println("content_preserved_5: OK");
+    } ⎉ {
+        println("content_preserved_5: FAILED ch=" + grid.cells[5].ch);
+    }
+
+    ⎇ grid.cells[11].ch == "C" ∧ grid.cells[11].fg == 5 ∧ grid.cells[11].bg == 6 {
+        println("content_preserved_11: OK");
+    } ⎉ {
+        println("content_preserved_11: FAILED ch=" + grid.cells[11].ch);
+    }
+
+    // Test 4: Unmodified cells also preserved
+    ⎇ grid.cells[1].ch == " " ∧ grid.cells[1].fg == 7 ∧ grid.cells[1].bg == 0 {
+        println("default_preserved: OK");
+    } ⎉ {
+        println("default_preserved: FAILED ch=" + grid.cells[1].ch);
+    }
+}
