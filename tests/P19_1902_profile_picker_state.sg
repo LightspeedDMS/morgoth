@@ -1,0 +1,107 @@
+// Test: profile picker state management in InputState
+// Spec: Phase 19 - Named Profiles
+// Priority: P19
+
+rite CopyModeState_new() {
+    ↩ {
+        active: false,
+        cursor_row: 0,
+        cursor_col: 0,
+        viewport_row: 0,
+        selecting: false,
+        select_start_row: 0,
+        select_start_col: 0,
+        line_mode: false,
+        text_lines: [],
+        search_active: false,
+        search_query: "",
+        search_matches: [],
+        search_current: -1,
+        search_saved_row: 0,
+        search_saved_col: 0,
+        search_saved_viewport: 0
+    }
+}
+
+rite InputState_new(leader_key) {
+    ↩ {
+        leader_active: false,
+        mouse_mode: true,
+        escape_buf: "",
+        in_escape: false,
+        last_escape_buf: "",
+        confirming_close: false,
+        confirming_quit: false,
+        showing_help: false,
+        showing_picker: false,
+        picker_profiles: [],
+        picker_selected: 0,
+        active_profile: "default",
+        leader_key: leader_key,
+        copy_mode: CopyModeState_new()
+    }
+}
+
+rite main() {
+    ≔ input = InputState_new(2);
+
+    // Initial state
+    ⎇ input.active_profile == "default" {
+        println("active_profile_default: OK");
+    } ⎉ {
+        println("active_profile_default: FAILED");
+    }
+
+    ⎇ input.showing_picker == false {
+        println("showing_picker_false: OK");
+    } ⎉ {
+        println("showing_picker_false: FAILED");
+    }
+
+    ⎇ input.picker_selected == 0 {
+        println("picker_selected_zero: OK");
+    } ⎉ {
+        println("picker_selected_zero: FAILED");
+    }
+
+    // Simulate opening picker
+    ≔ mut profiles = [];
+    push(profiles, "default");
+    push(profiles, "coding");
+    push(profiles, "monitoring");
+    input.picker_profiles = profiles;
+    input.showing_picker = true;
+
+    ⎇ len(input.picker_profiles) == 3 {
+        println("picker_profiles_count: OK");
+    } ⎉ {
+        println("picker_profiles_count: FAILED");
+    }
+
+    // Simulate j navigation
+    ⎇ input.picker_selected + 1 < len(input.picker_profiles) {
+        input.picker_selected = input.picker_selected + 1;
+    }
+    ⎇ input.picker_selected == 1 {
+        println("picker_nav_j: OK");
+    } ⎉ {
+        println("picker_nav_j: FAILED");
+    }
+
+    // Simulate Enter (load)
+    ≔ sel_name = input.picker_profiles[input.picker_selected];
+    input.active_profile = sel_name;
+    input.showing_picker = false;
+
+    ⎇ input.active_profile == "coding" {
+        println("picker_load_active: OK");
+    } ⎉ {
+        println("picker_load_active: FAILED");
+    }
+
+    ⎇ input.showing_picker == false {
+        println("picker_closed: OK");
+    } ⎉ {
+        println("picker_closed: FAILED");
+    }
+}

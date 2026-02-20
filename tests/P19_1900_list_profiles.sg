@@ -1,0 +1,70 @@
+// Test: list_profiles returns profile names from ~/.morgoth/profiles/
+// Spec: Phase 19 - Named Profiles
+// Priority: P19
+
+rite list_profiles() {
+    ≔ home = env("HOME");
+    ≔ dir = home + "/.morgoth/profiles";
+    ≔ mut names = [];
+    ⎇ fs_exists(dir) == false {
+        push(names, "default");
+        ↩ names
+    }
+    ≔ files = fs_list(dir);
+    ≔ mut i = 0;
+    ⟳ i < len(files) {
+        ≔ fname = files[i];
+        ⎇ ends_with(fname, ".json") == true {
+            ≔ name = substring(fname, 0, len(fname) - 5);
+            push(names, name);
+        }
+        i = i + 1;
+    }
+    ⎇ len(names) == 0 {
+        push(names, "default");
+    }
+    ↩ names
+}
+
+rite main() {
+    ≔ home = env("HOME");
+    ≔ dir = home + "/.morgoth/profiles";
+
+    // Create profiles dir with 2 profiles
+    ⎇ fs_exists(dir) == false {
+        fs_mkdir(dir);
+    }
+    fs_write(dir + "/default.json", "{\"panes\":[\"terminal\"]}");
+    fs_write(dir + "/coding.json", "{\"panes\":[\"terminal\",\"terminal\"]}");
+
+    ≔ profiles = list_profiles();
+
+    // Should have at least 2 profiles (default + coding)
+    ⎇ len(profiles) >= 2 {
+        println("min_profile_count: OK");
+    } ⎉ {
+        println("min_profile_count: FAILED got=" + to_string(len(profiles)));
+    }
+
+    // All results should be strings (not .json filenames)
+    ≔ mut all_str = true;
+    ≔ mut has_dot_json = false;
+    ≔ mut i = 0;
+    ⟳ i < len(profiles) {
+        ⎇ type_of(profiles[i]) != "string" { all_str = false; }
+        ⎇ ends_with(profiles[i], ".json") == true { has_dot_json = true; }
+        i = i + 1;
+    }
+
+    ⎇ all_str == true {
+        println("all_strings: OK");
+    } ⎉ {
+        println("all_strings: FAILED");
+    }
+
+    ⎇ has_dot_json == false {
+        println("no_json_extensions: OK");
+    } ⎉ {
+        println("no_json_extensions: FAILED");
+    }
+}

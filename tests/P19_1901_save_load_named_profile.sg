@@ -1,0 +1,118 @@
+// Test: save_named_profile and load_named_profile round-trip
+// Spec: Phase 19 - Named Profiles
+// Priority: P19
+
+rite Cell_new(ch, fg, bg) {
+    ↩ {ch: ch, fg: fg, bg: bg, dirty: false}
+}
+
+rite VTerm_new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ mut cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total {
+        push(cells, Cell_new(" ", 7, 0));
+        i = i + 1;
+    }
+    ↩ {
+        rows: rows, cols: cols, cells: cells,
+        scrollback: [], scrollback_max: 100,
+        cursor_row: 0, cursor_col: 0,
+        fg: 7, bg: 0,
+        in_alt_screen: false,
+        title: "",
+        scroll_offset: 0
+    }
+}
+
+rite Pane_new(id, pane_type, rows, cols) {
+    ↩ {
+        id: id,
+        pane_type: pane_type,
+        vterm: VTerm_new(rows, cols),
+        master_fd: -1,
+        alive: true,
+        title: pane_type,
+        region: {x: 0, y: 0, h: rows, w: cols}
+    }
+}
+
+rite save_named_profile(name, panes) {
+    ≔ home = env("HOME");
+    ≔ dir_path = home + "/.morgoth/profiles";
+    ⎇ fs_exists(dir_path) == false {
+        fs_mkdir(dir_path);
+    }
+    ≔ mut types = [];
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        push(types, panes[i].pane_type);
+        i = i + 1;
+    }
+    ≔ profile = {panes: types};
+    ≔ json = json_stringify(profile);
+    fs_write(dir_path + "/" + name + ".json", json);
+}
+
+rite load_named_profile(name, max_panes) {
+    ≔ home = env("HOME");
+    ≔ profile_path = home + "/.morgoth/profiles/" + name + ".json";
+    ≔ mut panes = [];
+    push(panes, "terminal");
+    ⎇ fs_exists(profile_path) == true {
+        ≔ raw = fs_read(profile_path);
+        ≔ j = json_parse(raw);
+        ≔ j_panes = map_get(j, "panes");
+        ⎇ j_panes != null ∧ len(j_panes) > 0 {
+            panes = j_panes;
+        }
+    }
+    ⎇ len(panes) > max_panes {
+        ≔ mut clamped = [];
+        ≔ mut ci = 0;
+        ⟳ ci < max_panes {
+            push(clamped, panes[ci]);
+            ci = ci + 1;
+        }
+        panes = clamped;
+    }
+    ↩ panes
+}
+
+rite main() {
+    // Save a "coding" profile with 2 terminals + 1 monitor
+    ≔ mut panes = [];
+    push(panes, Pane_new(0, "terminal", 10, 40));
+    push(panes, Pane_new(1, "terminal", 10, 40));
+    push(panes, Pane_new(2, "monitor", 10, 40));
+    save_named_profile("coding", panes);
+
+    // Load it back
+    ≔ loaded = load_named_profile("coding", 12);
+
+    ⎇ len(loaded) == 3 {
+        println("pane_count: OK");
+    } ⎉ {
+        println("pane_count: FAILED got=" + to_string(len(loaded)));
+    }
+
+    ⎇ loaded[0] == "terminal" {
+        println("pane0_type: OK");
+    } ⎉ {
+        println("pane0_type: FAILED");
+    }
+
+    ⎇ loaded[2] == "monitor" {
+        println("pane2_type: OK");
+    } ⎉ {
+        println("pane2_type: FAILED");
+    }
+
+    // Test max_panes clamping
+    ≔ clamped = load_named_profile("coding", 2);
+    ⎇ len(clamped) == 2 {
+        println("max_panes_clamp: OK");
+    } ⎉ {
+        println("max_panes_clamp: FAILED got=" + to_string(len(clamped)));
+    }
+}

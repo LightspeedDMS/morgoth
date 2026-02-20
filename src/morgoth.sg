@@ -1314,6 +1314,127 @@ rite vterm_restore_scrollback(vt, lines) {
 }
 
 // ============================================================================
+// Section 2c: Named Profiles (Phase 19)
+// ============================================================================
+
+// List available profile names from ~/.morgoth/profiles/
+// Returns array of profile name strings (without .json extension)
+rite list_profiles() {
+    ≔ home = env("HOME");
+    ≔ dir = home + "/.morgoth/profiles";
+    ≔ mut names = [];
+    ⎇ fs_exists(dir) == false {
+        push(names, "default");
+        ↩ names
+    }
+    ≔ files = fs_list(dir);
+    ≔ mut i = 0;
+    ⟳ i < len(files) {
+        ≔ fname = files[i];
+        ⎇ ends_with(fname, ".json") == true {
+            ≔ name = substring(fname, 0, len(fname) - 5);
+            push(names, name);
+        }
+        i = i + 1;
+    }
+    ⎇ len(names) == 0 {
+        push(names, "default");
+    }
+    ↩ names
+}
+
+// Load a named profile (generic version of load_profile)
+rite load_named_profile(name, max_panes) {
+    ≔ home = env("HOME");
+    ≔ profile_path = home + "/.morgoth/profiles/" + name + ".json";
+    ≔ mut panes = [];
+    push(panes, "terminal");
+    ⎇ fs_exists(profile_path) == true {
+        ≔ raw = fs_read(profile_path);
+        ≔ j = json_parse(raw);
+        ≔ j_panes = map_get(j, "panes");
+        ⎇ j_panes != null ∧ len(j_panes) > 0 {
+            panes = j_panes;
+        }
+    }
+    ⎇ len(panes) > max_panes {
+        ≔ mut clamped = [];
+        ≔ mut ci = 0;
+        ⟳ ci < max_panes {
+            push(clamped, panes[ci]);
+            ci = ci + 1;
+        }
+        panes = clamped;
+    }
+    ↩ panes
+}
+
+// Save current pane layout to a named profile
+rite save_named_profile(name, panes) {
+    ≔ home = env("HOME");
+    ≔ dir_path = home + "/.morgoth/profiles";
+    ⎇ fs_exists(dir_path) == false {
+        fs_mkdir(dir_path);
+    }
+    ≔ mut types = [];
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        push(types, panes[i].pane_type);
+        i = i + 1;
+    }
+    ≔ profile = {panes: types};
+    ≔ json = json_stringify(profile);
+    fs_write(dir_path + "/" + name + ".json", json);
+}
+
+// Render profile picker overlay in center of focused pane region
+rite render_profile_picker(grid, region, profiles, selected) {
+    ≔ inner_x = region.x + 1;
+    ≔ inner_y = region.y + 1;
+    ≔ inner_w = region.w - 2;
+    ≔ inner_h = region.h - 2;
+
+    // Clear interior
+    ≔ mut r = 0;
+    ⟳ r < inner_h {
+        ≔ mut c = 0;
+        ⟳ c < inner_w {
+            Grid·set(grid, inner_y + r, inner_x + c, " ", 7, 0);
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // Title line
+    ≔ title_str = "-- Profiles (Enter=load, ESC=cancel) --";
+    ≔ mut ci = 0;
+    ⟳ ci < len(title_str) ∧ ci < inner_w {
+        Grid·set(grid, inner_y, inner_x + ci, to_string(char_at(title_str, ci)), 14, 0);
+        ci = ci + 1;
+    }
+
+    // Profile list (starting at row 1)
+    ≔ mut pi = 0;
+    ⟳ pi < len(profiles) ∧ pi + 1 < inner_h {
+        ≔ pname = profiles[pi];
+        ≔ mut line = "";
+        ⎇ pi == selected {
+            line = "> " + pname;
+        } ⎉ {
+            line = "  " + pname;
+        }
+        ≔ fg = 7;
+        ⎇ pi == selected { fg = 11; }
+        ≔ mut lc = 0;
+        ⟳ lc < len(line) ∧ lc < inner_w {
+            Grid·set(grid, inner_y + 1 + pi, inner_x + lc, to_string(char_at(line, lc)), fg, 0);
+            lc = lc + 1;
+        }
+        pi = pi + 1;
+    }
+}
+
+// ============================================================================
 // Section 3: Layout Engine
 // ============================================================================
 
@@ -2180,6 +2301,10 @@ rite InputState·new(leader_key) {
         confirming_close: false,
         confirming_quit: false,
         showing_help: false,
+        showing_picker: false,
+        picker_profiles: [],
+        picker_selected: 0,
+        active_profile: "default",
         leader_key: leader_key,
         copy_mode: CopyModeState·new()
     };
@@ -2382,6 +2507,32 @@ rite process_input(input_state, byte, pane_count) {
         ↩ "help_dismiss"
     }
 
+    // Profile picker intercept — j/k navigate, Enter loads, Esc cancels
+    ⎇ input_state.showing_picker == true {
+        ⎇ byte == 27 {
+            input_state.showing_picker = false;
+            ↩ "picker_close"
+        }
+        ⎇ byte == 13 {
+            ↩ "picker_load"
+        }
+        ⎇ byte == 106 {
+            // j — next profile
+            ⎇ input_state.picker_selected + 1 < len(input_state.picker_profiles) {
+                input_state.picker_selected = input_state.picker_selected + 1;
+            }
+            ↩ "picker_move"
+        }
+        ⎇ byte == 107 {
+            // k — prev profile
+            ⎇ input_state.picker_selected > 0 {
+                input_state.picker_selected = input_state.picker_selected - 1;
+            }
+            ↩ "picker_move"
+        }
+        ↩ "none"
+    }
+
     ≔ mut action = "passthrough";
 
     // In escape sequence
@@ -2420,7 +2571,7 @@ rite process_input(input_state, byte, pane_count) {
                 input_state.leader_active = false;
                 action = "unknown_leader";
                 ⎇ byte == 110 { action = "focus_next"; }
-                ⎇ byte == 112 { action = "focus_prev"; }
+                ⎇ byte == 112 { action = "profile_picker_open"; }
                 ⎇ byte == 113 { action = "quit_request"; }
                 ⎇ byte == 107 { action = "scroll_up"; }
                 ⎇ byte == 106 { action = "scroll_down"; }
@@ -2428,7 +2579,7 @@ rite process_input(input_state, byte, pane_count) {
                 ⎇ byte == 109 { action = "create_monitor"; }
                 ⎇ byte == 120 { action = "close_pane"; }
                 ⎇ byte == 122 { action = "zoom_toggle"; }
-                ⎇ byte == 83  { action = "save_profile"; }
+                ⎇ byte == 83  { action = "save_named_profile"; }
                 ⎇ byte == 91  { action = "copy_enter"; }
                 ⎇ byte == 47  { action = "search_enter"; }
                 ⎇ byte == 63  { action = "help_toggle"; }
@@ -3096,9 +3247,67 @@ rite main() {
                         render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), exc.border_fg, exc.title_fg, true);
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "save_profile" {
-                        save_profile(panes);
-                        render_status_bar(screen, " Profile saved");
+                    } ⎉ { ⎇ action == "save_named_profile" {
+                        save_named_profile(input.active_profile, panes);
+                        render_status_bar(screen, " Profile '" + input.active_profile + "' saved");
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ action == "profile_picker_open" {
+                        input.picker_profiles = list_profiles();
+                        input.picker_selected = 0;
+                        // Set selected to current active_profile if found
+                        ≔ mut fi = 0;
+                        ⟳ fi < len(input.picker_profiles) {
+                            ⎇ input.picker_profiles[fi] == input.active_profile {
+                                input.picker_selected = fi;
+                            }
+                            fi = fi + 1;
+                        }
+                        input.showing_picker = true;
+                        render_profile_picker(screen, panes[focus].region, input.picker_profiles, input.picker_selected);
+                        render_border(screen, panes[focus].region, "[PROFILES]", 14, 15, true);
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ action == "picker_move" {
+                        render_profile_picker(screen, panes[focus].region, input.picker_profiles, input.picker_selected);
+                        render_border(screen, panes[focus].region, "[PROFILES]", 14, 15, true);
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ action == "picker_load" {
+                        input.showing_picker = false;
+                        ≔ sel_name = input.picker_profiles[input.picker_selected];
+                        input.active_profile = sel_name;
+                        ≔ new_pane_types = load_named_profile(sel_name, cfg.max_panes);
+                        // Rebuild panes for new profile
+                        shutdown_panes(panes);
+                        panes = [];
+                        ≔ new_grid = recompute_grid(len(new_pane_types), screen_h, screen_w);
+                        grid_rows = new_grid.rows;
+                        grid_cols = new_grid.cols;
+                        ≔ mut new_regions = layout_grid(grid_rows, grid_cols, screen_w, screen_h);
+                        ≔ mut npi = 0;
+                        ⟳ npi < len(new_pane_types) {
+                            ⎇ new_pane_types[npi] == "monitor" {
+                                push(panes, MonitorPane·new(npi, new_regions[npi]));
+                            } ⎉ {
+                                push(panes, Pane·new(npi, new_regions[npi], cfg.shell));
+                            }
+                            npi = npi + 1;
+                        }
+                        focus = 0;
+                        zoomed = false;
+                        screen = Grid·new(screen_h, screen_w);
+                        ≔ mut rpi = 0;
+                        ⟳ rpi < len(panes) {
+                            ≔ rt = pane_title(panes[rpi], rpi, focus);
+                            ≔ rc = border_colors(panes[rpi].pane_type, rpi == focus);
+                            render_border(screen, panes[rpi].region, rt, rc.border_fg, rc.title_fg, rpi == focus);
+                            rpi = rpi + 1;
+                        }
+                        render_status_bar(screen, " Loaded profile '" + sel_name + "'");
+                        flush_dirty(screen);
+                    } ⎉ { ⎇ action == "picker_close" {
+                        vterm_blit(panes[focus].vterm, screen, panes[focus].region);
+                        ≔ pcc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), pcc.border_fg, pcc.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "search_enter" {
                         ≔ cm = input.copy_mode;
@@ -3174,7 +3383,7 @@ rite main() {
                             render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         }
-                    } } } } } } } } } } } } } } } } } } } } } } } } } } } }
+                    } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } }
 
                     bi = bi + 1;
                 }
