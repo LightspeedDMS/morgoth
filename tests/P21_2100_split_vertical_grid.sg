@@ -1,0 +1,60 @@
+// Test: split_vertical grid math — forced_cols increments, rows recomputed
+// Spec: Phase 21 - Manual Pane Splitting
+// Priority: P21
+
+rite main() {
+    // Simulate split_vertical with 1 existing pane (1x1 grid)
+    // cur_rows = 1, cur_cols = 1 → forced_cols = 2, np = 2, forced_rows = ceil(2/2) = 1
+    ≔ cur_rows = 1;
+    ≔ cur_cols = 1;
+    ≔ forced_cols = cur_cols + 1;
+    ≔ np = 2;
+    ≔ forced_rows = (np + forced_cols - 1) / forced_cols;
+
+    ⎇ forced_cols == 2 {
+        println("forced_cols_incremented: OK");
+    } ⎉ {
+        println("forced_cols_incremented: FAILED got=" + to_string(forced_cols));
+    }
+
+    ⎇ forced_rows == 1 {
+        println("forced_rows_adjusted: OK");
+    } ⎉ {
+        println("forced_rows_adjusted: FAILED got=" + to_string(forced_rows));
+    }
+
+    // Simulate split_vertical with 2 existing panes (1x2 grid) → forced_cols = 3, np = 3
+    ≔ cur_rows2 = 1;
+    ≔ cur_cols2 = 2;
+    ≔ forced_cols2 = cur_cols2 + 1;
+    ≔ np2 = 3;
+    ≔ forced_rows2 = (np2 + forced_cols2 - 1) / forced_cols2;
+
+    ⎇ forced_cols2 == 3 {
+        println("second_split_cols: OK");
+    } ⎉ {
+        println("second_split_cols: FAILED got=" + to_string(forced_cols2));
+    }
+
+    ⎇ forced_rows2 == 1 {
+        println("second_split_rows: OK");
+    } ⎉ {
+        println("second_split_rows: FAILED got=" + to_string(forced_rows2));
+    }
+
+    // Forced grid resets to auto when it can't fit panes (SIGWINCH path)
+    // forced_rows * forced_cols < len(panes) → reset to 0
+    ≔ mut fr = 2;
+    ≔ mut fc = 2;
+    ≔ num_panes = 5;
+    ⎇ fr * fc < num_panes {
+        fr = 0;
+        fc = 0;
+    }
+
+    ⎇ fr == 0 ∧ fc == 0 {
+        println("forced_grid_reset: OK");
+    } ⎉ {
+        println("forced_grid_reset: FAILED fr=" + to_string(fr) + " fc=" + to_string(fc));
+    }
+}

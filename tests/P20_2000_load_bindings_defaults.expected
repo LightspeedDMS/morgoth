@@ -1,0 +1,7 @@
+new_terminal_default: OK
+new_monitor_default: OK
+close_pane_default: OK
+zoom_toggle_default: OK
+copy_mode_default: OK
+save_profile_default: OK
+help_default: OK

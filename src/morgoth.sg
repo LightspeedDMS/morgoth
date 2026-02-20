@@ -1220,6 +1220,47 @@ rite save_profile(panes) {
 // Section 2b: Session Persistence (Phase 18)
 // ============================================================================
 
+// Load configurable keybindings from ~/.morgoth/config.json (Phase 20)
+// Returns object with byte codes for each configurable leader action.
+// Defaults match hardcoded values from prior phases.
+rite load_bindings() {
+    ≔ mut b = {
+        new_terminal: 99,
+        new_monitor:  109,
+        close_pane:   120,
+        zoom_toggle:  122,
+        copy_mode:    91,
+        save_profile: 83,
+        help:         63
+    };
+    ≔ home = env("HOME");
+    ≔ config_path = home + "/.morgoth/config.json";
+    ⎇ fs_exists(config_path) == true {
+        ≔ raw = fs_read(config_path);
+        ⎇ len(raw) > 0 ∧ starts_with(raw, "{") == true {
+            ≔ j = json_parse(raw);
+            ≔ jb = map_get(j, "bindings");
+            ⎇ jb != null {
+                ≔ v = map_get(jb, "new_terminal");
+                ⎇ v != null ∧ len(v) > 0 { b.new_terminal = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "new_monitor");
+                ⎇ v != null ∧ len(v) > 0 { b.new_monitor = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "close_pane");
+                ⎇ v != null ∧ len(v) > 0 { b.close_pane = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "zoom_toggle");
+                ⎇ v != null ∧ len(v) > 0 { b.zoom_toggle = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "copy_mode");
+                ⎇ v != null ∧ len(v) > 0 { b.copy_mode = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "save_profile");
+                ⎇ v != null ∧ len(v) > 0 { b.save_profile = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "help");
+                ⎇ v != null ∧ len(v) > 0 { b.help = char_code_at(v, 0); }
+            }
+        }
+    }
+    ↩ b
+}
+
 // Extract scrollback buffer as plain text lines (scrollback rows only, not visible area)
 rite extract_scrollback_text(vt) {
     ≔ mut lines = [];
@@ -1481,6 +1522,28 @@ rite relayout_panes(panes, screen_w, screen_h, screen, focus) {
     }
     flush_dirty(screen);
     ↩ { grid_rows: grid.rows, grid_cols: grid.cols }
+}
+
+// Like relayout_panes but uses explicit grid dimensions (Phase 21 forced split)
+rite relayout_panes_forced(panes, screen_w, screen_h, screen, focus, rows, cols) {
+    ≔ regions = layout_grid(rows, cols, screen_w, screen_h);
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ≔ ri = i;
+        ⎇ ri < len(regions) {
+            panes[i].region = regions[ri];
+            vterm_resize(panes[i].vterm, regions[ri].h - 2, regions[ri].w - 2);
+            ⎇ panes[i].alive == true {
+                Pty·set_size(panes[i].master_fd, regions[ri].h - 2, regions[ri].w - 2);
+            }
+        }
+        vterm_blit(panes[i].vterm, screen, panes[i].region);
+        ≔ t = pane_title(panes[i], i, focus);
+        ≔ tc = border_colors(panes[i].pane_type, i == focus);
+        render_border(screen, panes[i].region, t, tc.border_fg, tc.title_fg, i == focus);
+        i = i + 1;
+    }
+    flush_dirty(screen);
 }
 
 // Calculate grid layout regions for a rows x cols grid
@@ -2291,7 +2354,7 @@ rite CopyModeState·new() {
 }
 
 // Input state machine
-rite InputState·new(leader_key) {
+rite InputState·new(leader_key, bindings) {
     ≔ state = {
         leader_active: false,
         mouse_mode: true,
@@ -2306,6 +2369,7 @@ rite InputState·new(leader_key) {
         picker_selected: 0,
         active_profile: "default",
         leader_key: leader_key,
+        bindings: bindings,
         copy_mode: CopyModeState·new()
     };
     ↩ state
@@ -2575,14 +2639,16 @@ rite process_input(input_state, byte, pane_count) {
                 ⎇ byte == 113 { action = "quit_request"; }
                 ⎇ byte == 107 { action = "scroll_up"; }
                 ⎇ byte == 106 { action = "scroll_down"; }
-                ⎇ byte == 99  { action = "create_terminal"; }
-                ⎇ byte == 109 { action = "create_monitor"; }
-                ⎇ byte == 120 { action = "close_pane"; }
-                ⎇ byte == 122 { action = "zoom_toggle"; }
-                ⎇ byte == 83  { action = "save_named_profile"; }
-                ⎇ byte == 91  { action = "copy_enter"; }
+                ⎇ byte == input_state.bindings.new_terminal  { action = "create_terminal"; }
+                ⎇ byte == input_state.bindings.new_monitor   { action = "create_monitor"; }
+                ⎇ byte == input_state.bindings.close_pane    { action = "close_pane"; }
+                ⎇ byte == 124 { action = "split_vertical"; }
+                ⎇ byte == 45  { action = "split_horizontal"; }
+                ⎇ byte == input_state.bindings.zoom_toggle   { action = "zoom_toggle"; }
+                ⎇ byte == input_state.bindings.save_profile  { action = "save_named_profile"; }
+                ⎇ byte == input_state.bindings.copy_mode     { action = "copy_enter"; }
                 ⎇ byte == 47  { action = "search_enter"; }
-                ⎇ byte == 63  { action = "help_toggle"; }
+                ⎇ byte == input_state.bindings.help          { action = "help_toggle"; }
                 ⎇ byte == input_state.leader_key { action = "passthrough_leader"; }
                 ⎇ byte >= 49 ∧ byte <= 57 { action = "focus_" + to_string(byte - 48); }
             } ⎉ {
@@ -2847,10 +2913,15 @@ rite main() {
     ≔ mut screen = Grid·new(screen_h, screen_w);
 
     // Input state
-    ≔ input = InputState·new(cfg.leader_key);
+    ≔ bindings = load_bindings();
+    ≔ input = InputState·new(cfg.leader_key, bindings);
     ≔ mut focus = 0;
     ≔ mut running = true;
     ≔ mut zoomed = false;
+
+    // Forced grid state (Phase 21) — 0 = auto, nonzero = user-specified split layout
+    ≔ mut forced_rows = 0;
+    ≔ mut forced_cols = 0;
 
     // HMR state
     ≔ mut hmr_counter = 0;
@@ -2922,6 +2993,14 @@ rite main() {
 
             // Reset zoom on resize
             zoomed = false;
+
+            // Reset forced grid if it no longer fits the pane count
+            ⎇ forced_rows > 0 ∧ forced_cols > 0 {
+                ⎇ forced_rows * forced_cols < len(panes) {
+                    forced_rows = 0;
+                    forced_cols = 0;
+                }
+            }
 
             // Recreate screen buffer and relayout all panes
             screen = Grid·new(screen_h, screen_w);
@@ -3143,7 +3222,9 @@ rite main() {
                         ⎇ focus >= len(panes) {
                             focus = len(panes) - 1;
                         }
-                        // Relayout
+                        // Relayout — reset forced grid on close
+                        forced_rows = 0;
+                        forced_cols = 0;
                         screen = Grid·new(screen_h, screen_w);
                         ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
                         grid_rows = gl.grid_rows;
@@ -3154,6 +3235,54 @@ rite main() {
                     } ⎉ { ⎇ action == "close_cancel" {
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
+                    } ⎉ { ⎇ action == "split_vertical" {
+                        // Add terminal; force same rows, +1 col (Phase 21)
+                        ⎇ len(panes) < cfg.max_panes {
+                            ≔ cur_rows = grid_rows;
+                            ≔ cur_cols = grid_cols;
+                            ⎇ forced_rows > 0 { cur_rows = forced_rows; }
+                            ⎇ forced_cols > 0 { cur_cols = forced_cols; }
+                            forced_cols = cur_cols + 1;
+                            ≔ np = len(panes) + 1;
+                            forced_rows = (np + forced_cols - 1) / forced_cols;
+                            ≔ tmp_r = Region·new(0, 0, 40, 12);
+                            push(panes, Pane·new(len(panes), tmp_r, cfg.shell));
+                            focus = len(panes) - 1;
+                            screen = Grid·new(screen_h, screen_w);
+                            relayout_panes_forced(panes, screen_w, screen_h, screen, focus, forced_rows, forced_cols);
+                            grid_rows = forced_rows;
+                            grid_cols = forced_cols;
+                            zoomed = false;
+                            render_status_bar_styled(screen, focus, panes, "normal");
+                            flush_dirty(screen);
+                        } ⎉ {
+                            render_status_bar(screen, " Max panes (" + to_string(cfg.max_panes) + ") reached");
+                            flush_dirty(screen);
+                        }
+                    } ⎉ { ⎇ action == "split_horizontal" {
+                        // Add terminal; force +1 row, same cols (Phase 21)
+                        ⎇ len(panes) < cfg.max_panes {
+                            ≔ cur_rows = grid_rows;
+                            ≔ cur_cols = grid_cols;
+                            ⎇ forced_rows > 0 { cur_rows = forced_rows; }
+                            ⎇ forced_cols > 0 { cur_cols = forced_cols; }
+                            forced_rows = cur_rows + 1;
+                            ≔ np = len(panes) + 1;
+                            forced_cols = (np + forced_rows - 1) / forced_rows;
+                            ≔ tmp_r = Region·new(0, 0, 40, 12);
+                            push(panes, Pane·new(len(panes), tmp_r, cfg.shell));
+                            focus = len(panes) - 1;
+                            screen = Grid·new(screen_h, screen_w);
+                            relayout_panes_forced(panes, screen_w, screen_h, screen, focus, forced_rows, forced_cols);
+                            grid_rows = forced_rows;
+                            grid_cols = forced_cols;
+                            zoomed = false;
+                            render_status_bar_styled(screen, focus, panes, "normal");
+                            flush_dirty(screen);
+                        } ⎉ {
+                            render_status_bar(screen, " Max panes (" + to_string(cfg.max_panes) + ") reached");
+                            flush_dirty(screen);
+                        }
                     } ⎉ { ⎇ action == "zoom_toggle" {
                         ⎇ zoomed == true {
                             // Unzoom: relayout all panes
@@ -3383,7 +3512,7 @@ rite main() {
                             render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         }
-                    } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } }
+                    } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } }
 
                     bi = bi + 1;
                 }

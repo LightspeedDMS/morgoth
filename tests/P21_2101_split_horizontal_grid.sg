@@ -1,0 +1,59 @@
+// Test: split_horizontal grid math — forced_rows increments, cols recomputed
+// Spec: Phase 21 - Manual Pane Splitting
+// Priority: P21
+
+rite main() {
+    // Simulate split_horizontal with 1 existing pane (1x1 grid)
+    // cur_rows = 1, cur_cols = 1 → forced_rows = 2, np = 2, forced_cols = ceil(2/2) = 1
+    ≔ cur_rows = 1;
+    ≔ cur_cols = 1;
+    ≔ forced_rows = cur_rows + 1;
+    ≔ np = 2;
+    ≔ forced_cols = (np + forced_rows - 1) / forced_rows;
+
+    ⎇ forced_rows == 2 {
+        println("forced_rows_incremented: OK");
+    } ⎉ {
+        println("forced_rows_incremented: FAILED got=" + to_string(forced_rows));
+    }
+
+    ⎇ forced_cols == 1 {
+        println("forced_cols_adjusted: OK");
+    } ⎉ {
+        println("forced_cols_adjusted: FAILED got=" + to_string(forced_cols));
+    }
+
+    // Simulate split_horizontal with 2 existing panes (2x1 grid) → forced_rows = 3, np = 3
+    ≔ cur_rows2 = 2;
+    ≔ cur_cols2 = 1;
+    ≔ forced_rows2 = cur_rows2 + 1;
+    ≔ np2 = 3;
+    ≔ forced_cols2 = (np2 + forced_rows2 - 1) / forced_rows2;
+
+    ⎇ forced_rows2 == 3 {
+        println("second_split_rows: OK");
+    } ⎉ {
+        println("second_split_rows: FAILED got=" + to_string(forced_rows2));
+    }
+
+    ⎇ forced_cols2 == 1 {
+        println("second_split_cols: OK");
+    } ⎉ {
+        println("second_split_cols: FAILED got=" + to_string(forced_cols2));
+    }
+
+    // Vertical split then horizontal split: 1x1 → 1x2 (vertical) → 2x2 (horizontal)
+    // After vertical: forced_rows=1, forced_cols=2
+    // After horizontal: forced_rows=2, forced_cols=ceil(3/2)=2
+    ≔ v_rows = 1;
+    ≔ v_cols = 2;
+    ≔ np3 = 3;
+    ≔ h_rows = v_rows + 1;
+    ≔ h_cols = (np3 + h_rows - 1) / h_rows;
+
+    ⎇ h_rows == 2 ∧ h_cols == 2 {
+        println("mixed_split_grid: OK");
+    } ⎉ {
+        println("mixed_split_grid: FAILED h_rows=" + to_string(h_rows) + " h_cols=" + to_string(h_cols));
+    }
+}

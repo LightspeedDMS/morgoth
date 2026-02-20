@@ -1,0 +1,79 @@
+// Test: load_bindings reads overrides from config.json bindings section
+// Spec: Phase 20 - Configurable Keybindings
+// Priority: P20
+
+rite load_bindings() {
+    ≔ mut b = {
+        new_terminal: 99,
+        new_monitor:  109,
+        close_pane:   120,
+        zoom_toggle:  122,
+        copy_mode:    91,
+        save_profile: 83,
+        help:         63
+    };
+    ≔ home = env("HOME");
+    ≔ config_path = home + "/.morgoth/config.json";
+    ⎇ fs_exists(config_path) == true {
+        ≔ raw = fs_read(config_path);
+        ⎇ len(raw) > 0 ∧ starts_with(raw, "{") == true {
+            ≔ j = json_parse(raw);
+            ≔ jb = map_get(j, "bindings");
+            ⎇ jb != null {
+                ≔ v = map_get(jb, "new_terminal");
+                ⎇ v != null ∧ len(v) > 0 { b.new_terminal = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "new_monitor");
+                ⎇ v != null ∧ len(v) > 0 { b.new_monitor = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "close_pane");
+                ⎇ v != null ∧ len(v) > 0 { b.close_pane = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "zoom_toggle");
+                ⎇ v != null ∧ len(v) > 0 { b.zoom_toggle = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "copy_mode");
+                ⎇ v != null ∧ len(v) > 0 { b.copy_mode = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "save_profile");
+                ⎇ v != null ∧ len(v) > 0 { b.save_profile = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "help");
+                ⎇ v != null ∧ len(v) > 0 { b.help = char_code_at(v, 0); }
+            }
+        }
+    }
+    ↩ b
+}
+
+rite main() {
+    // Write a config with custom bindings
+    ≔ home = env("HOME");
+    ≔ dir = home + "/.morgoth";
+    ⎇ fs_exists(dir) == false {
+        fs_mkdir(dir);
+    }
+    // Override new_terminal to 't' (116) and help to 'H' (72)
+    ≔ config_json = "{\"bindings\":{\"new_terminal\":\"t\",\"help\":\"H\"}}";
+    fs_write(dir + "/config.json", config_json);
+
+    ≔ b = load_bindings();
+
+    // new_terminal should be 't' (116)
+    ⎇ b.new_terminal == 116 {
+        println("custom_new_terminal: OK");
+    } ⎉ {
+        println("custom_new_terminal: FAILED got=" + to_string(b.new_terminal));
+    }
+
+    // help should be 'H' (72)
+    ⎇ b.help == 72 {
+        println("custom_help: OK");
+    } ⎉ {
+        println("custom_help: FAILED got=" + to_string(b.help));
+    }
+
+    // non-overridden binding stays at default
+    ⎇ b.new_monitor == 109 {
+        println("default_preserved: OK");
+    } ⎉ {
+        println("default_preserved: FAILED got=" + to_string(b.new_monitor));
+    }
+
+    // Cleanup — remove config to avoid affecting other tests
+    fs_write(dir + "/config.json", "{}");
+}

@@ -1,0 +1,87 @@
+// Test: load_bindings returns correct defaults when no config
+// Spec: Phase 20 - Configurable Keybindings
+// Priority: P20
+
+rite load_bindings() {
+    ≔ mut b = {
+        new_terminal: 99,
+        new_monitor:  109,
+        close_pane:   120,
+        zoom_toggle:  122,
+        copy_mode:    91,
+        save_profile: 83,
+        help:         63
+    };
+    ≔ home = env("HOME");
+    ≔ config_path = home + "/.morgoth/config.json";
+    ⎇ fs_exists(config_path) == true {
+        ≔ raw = fs_read(config_path);
+        ⎇ len(raw) > 0 ∧ starts_with(raw, "{") == true {
+            ≔ j = json_parse(raw);
+            ≔ jb = map_get(j, "bindings");
+            ⎇ jb != null {
+                ≔ v = map_get(jb, "new_terminal");
+                ⎇ v != null ∧ len(v) > 0 { b.new_terminal = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "new_monitor");
+                ⎇ v != null ∧ len(v) > 0 { b.new_monitor = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "close_pane");
+                ⎇ v != null ∧ len(v) > 0 { b.close_pane = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "zoom_toggle");
+                ⎇ v != null ∧ len(v) > 0 { b.zoom_toggle = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "copy_mode");
+                ⎇ v != null ∧ len(v) > 0 { b.copy_mode = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "save_profile");
+                ⎇ v != null ∧ len(v) > 0 { b.save_profile = char_code_at(v, 0); }
+                ≔ v = map_get(jb, "help");
+                ⎇ v != null ∧ len(v) > 0 { b.help = char_code_at(v, 0); }
+            }
+        }
+    }
+    ↩ b
+}
+
+rite main() {
+    ≔ b = load_bindings();
+
+    ⎇ b.new_terminal == 99 {
+        println("new_terminal_default: OK");
+    } ⎉ {
+        println("new_terminal_default: FAILED got=" + to_string(b.new_terminal));
+    }
+
+    ⎇ b.new_monitor == 109 {
+        println("new_monitor_default: OK");
+    } ⎉ {
+        println("new_monitor_default: FAILED got=" + to_string(b.new_monitor));
+    }
+
+    ⎇ b.close_pane == 120 {
+        println("close_pane_default: OK");
+    } ⎉ {
+        println("close_pane_default: FAILED got=" + to_string(b.close_pane));
+    }
+
+    ⎇ b.zoom_toggle == 122 {
+        println("zoom_toggle_default: OK");
+    } ⎉ {
+        println("zoom_toggle_default: FAILED got=" + to_string(b.zoom_toggle));
+    }
+
+    ⎇ b.copy_mode == 91 {
+        println("copy_mode_default: OK");
+    } ⎉ {
+        println("copy_mode_default: FAILED got=" + to_string(b.copy_mode));
+    }
+
+    ⎇ b.save_profile == 83 {
+        println("save_profile_default: OK");
+    } ⎉ {
+        println("save_profile_default: FAILED got=" + to_string(b.save_profile));
+    }
+
+    ⎇ b.help == 63 {
+        println("help_default: OK");
+    } ⎉ {
+        println("help_default: FAILED got=" + to_string(b.help));
+    }
+}
