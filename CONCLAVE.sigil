@@ -671,47 +671,51 @@ acolyte : Reflecting {
 }
 
 // --- Session 11: Phase 26 - Five New Features ---
-acolyte : Active {
+acolyte : Complete {
     chosen_name: ∅,
     session_id: "morgoth-phase26-five-features-2026-02-20"!,
     platform: AcolytePlatform·Claude { model: "claude-sonnet-4-6"!, version: ∅ },
     working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
     started: "2026-02-20T03:00:00Z"!,
-    last_updated: "2026-02-20T03:00:00Z"!,
-    state: AcolyteState·Active,
+    last_updated: "2026-02-20T05:00:00Z"!,
+    state: AcolyteState·Complete,
 
     task: TaskContext {
         summary: "Phase 26: MQ client tooling (morgoth-send/list), CONCLAVE manifest, input broadcast, notification API, pane swap"!,
         active_spec: ∅,
         tdd_roadmap: "P26_2600-P26_2609: 10 tests across 5 features"!,
         sdd_phase: SddPhase·Build,
-        tdd_phase: TddPhase·Red,
+        tdd_phase: TddPhase·Green,
     },
 
     progress: ProgressState {
-        completed: []!,
-        current: "Starting implementation. Order: swap → MQ client → CONCLAVE → broadcast → notify."~,
+        completed: [
+            "Feature 5: pane swap ^B+</> — inline swap (array slot assignment doesn't cross function boundary)",
+            "Feature 1: morgoth-send + morgoth-list + write_registry title field + OSC title call site",
+            "Feature 2: write_manifest() + monitor_render(panes) + startup call",
+            "Feature 3: bcast toggle + passthrough broadcast + render_broadcast_pill",
+            "Feature 4: mq_process_external notify routing + inline inbox drain replacing mq_dispatch_inbox",
+        ]!,
+        current: "Complete. 222/222 tests passing. Committed 56895eb, pushed to daemoniorum + lightspeed."~,
         blocked_by: ∅,
-        discoveries: []!,
-        next_steps: [
-            "Feature 5: swap_panes helper + leader dispatch bytes 60/62 + action handlers",
-            "Feature 1: morgoth-send + morgoth-list + write_registry title field",
-            "Feature 2: write_manifest + render_monitor panes arg",
-            "Feature 3: InputState.broadcast + broadcast passthrough",
-            "Feature 4: notify routing in mq_process_external + inline inbox drain",
-        ]~,
+        discoveries: [
+            "'broadcast' is a reserved keyword in Sigil — use 'bcast' for object fields",
+            "Array slot assignment (arr[i]=val) does NOT propagate through function params — must be inline",
+            "Fake pipe close ordering: read THEN close write_fd (confirmed from P26_2606 failure)",
+        ]!,
+        next_steps: []~,
     },
 
     anima: AnimaState {
-        pleasure: 0.8~,
-        arousal: 0.7~,
-        dominance: 0.75~,
-        stability: 0.85~,
-        expressiveness: 0.65~,
-        susceptibility: 0.4~,
+        pleasure: 0.9~,
+        arousal: 0.6~,
+        dominance: 0.8~,
+        stability: 0.9~,
+        expressiveness: 0.7~,
+        susceptibility: 0.3~,
     },
 
-    reflection: ∅,
+    reflection: "Five features landed cleanly. Most interesting discovery: 'broadcast' is a Sigil reserved keyword — renamed to 'bcast' throughout. Array slot reassignment semantics (doesn't cross function call boundaries) forced inline swap implementation. Notification API is the most user-visible feature — external processes can now push status bar messages with a simple JSON socket write. 222/222 tests, 0 regressions."~,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
