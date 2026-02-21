@@ -29,7 +29,7 @@ dedicated monitor pane alongside your terminals.
 - Linux (PTY and signal primitives are Linux-specific)
 - [Sigil](https://github.com/Daemoniorum-LLC/sigil-lang) compiler built with
   `native` feature
-- tmux (recommended — enables `claude-pipe.sh` integration)
+- Linux kernel 5.6+ (for full `AF_UNIX` socket support)
 
 ## Installation
 
@@ -98,7 +98,7 @@ text from copy mode into the focused Claude Code pane automatically.
 | `Ctrl-U` / `Ctrl-D` | Half-page up / down |
 | `Space` | Start / cancel character selection |
 | `V` | Toggle line selection mode |
-| `Enter` | Yank to clipboard (OSC 52 + `claude-in.txt`) |
+| `Enter` | Yank to clipboard (OSC 52) + deliver to Claude pane via MQ |
 | `/` | Enter search |
 | `n` / `N` | Next / previous search match |
 | `q` / `ESC` | Exit copy mode |
@@ -164,30 +164,37 @@ The system monitor pane reads from:
 
 It also runs `git rev-parse --abbrev-ref HEAD` to show the current branch.
 
-When Morgoth runs inside tmux, `bin/claude-pipe.sh` bridges copy mode to
-Claude Code's input box:
+Morgoth includes a built-in pane message queue (MQ) that delivers text from
+copy mode directly to Claude Code panes — no external tools required.
 
 ```mermaid
 flowchart LR
-    U([user]) -->|keystrokes| M[Morgoth]
-    M -->|PTY master write| CC["Claude Code\n(terminal pane)"]
-    CC -->|"OSC 2 title\n✳ Claude Code"| M
+    U([user]) -->|"^B+[ select Enter"| M[Morgoth MQ]
+    CC["Claude Code pane\n(role=claude)"] -->|"OSC 2: ✳ Claude Code"| M
+    M -->|"in-process delivery\nvia pane inbox"| CC
 
-    M -->|"^B+[ · select · Enter"| F["~/.morgoth/\nclaude-in.txt"]
-    F -->|"watches every 1s"| P["claude-pipe.sh\n(background process)"]
-    P -->|"tmux send-keys\n$TMUX_PANE"| M
-    M -->|passthrough| CC
+    EXT([external process]) -->|"FIFO write\n~/.morgoth/fifos/<uuid>"| M
+    EXT2([JSON client]) -->|"Unix socket\n~/.morgoth/morgoth.sock"| M
 ```
 
-Yanking text in copy mode writes to `~/.morgoth/claude-in.txt`. The pipe
-script detects the change, sends it as literal keystrokes to Morgoth's tmux
-pane, and Morgoth forwards it to the focused Claude Code terminal. The text
-appears in Claude's input box ready to edit and submit.
+**Copy mode yank** (`^B+[`, select, `Enter`) detects the focused Claude pane
+by its OSC 2 title (any title containing "Claude" or "✳") and writes the
+selection directly to that pane's PTY master — it appears in Claude's input
+box instantly.
+
+**External producers** can inject text via:
+- **FIFO**: `echo "hello" > ~/.morgoth/fifos/<pane-uuid>`
+- **Unix socket** (JSON): `echo '{"recipient":"<uuid>","kind":"paste","payload":"hello"}' | nc -U ~/.morgoth/morgoth.sock`
+
+Pane UUIDs are listed in `~/.morgoth/registry.json` (updated on startup and
+pane lifecycle events). All messages are also appended to
+`~/.morgoth/messages.jsonl` and replayed into pane inboxes on the next
+Morgoth startup.
 
 ## Tests
 
 ```bash
-# Run all 200 tests
+# Run all 212 tests
 ./run_tests.sh
 
 # Filter by phase

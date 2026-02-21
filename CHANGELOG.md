@@ -5,6 +5,35 @@ model; each phase corresponds to a cohesive slice of functionality.
 
 ---
 
+## v0.2.0 — 2026-02-20
+
+212/212 tests passing.
+
+### Phase 25 — Pane Message Queue (2026-02-20)
+
+Replaces the fragile `claude-in.txt` + `claude-pipe.sh` file-based IPC with a
+proper per-pane message queue.
+
+- **In-process delivery**: `mq_send` → `mq_dispatch_inbox` delivers text from
+  copy-mode yank directly to any pane with `role="claude"` — zero latency
+- **Role detection**: `detect_role(title)` classifies panes as "claude", "terminal",
+  or "monitor" from OSC 2 window title; updated on every title change
+- **Pane UUID**: each pane now has a stable `uuid_v4()` id; integer position index
+  removed from `Pane·new` / `MonitorPane·new` signatures
+- **Per-pane FIFOs**: `~/.morgoth/fifos/<uuid>` — external processes can write
+  plain text; polled non-blocking alongside PTY fds each event loop iteration
+- **Unix domain socket**: `~/.morgoth/morgoth.sock` — structured JSON clients can
+  send `{"recipient":"<uuid>","kind":"paste","payload":"..."}` messages
+- **Persistent log**: messages appended to `~/.morgoth/messages.jsonl`; replayed
+  into pane inboxes on startup via `mq_load_pending`
+- **Registry**: `~/.morgoth/registry.json` written on startup and pane state changes
+- **Stdlib additions**: `mkfifo`, `Sys·open` native path, `O_NONBLOCK`, `Sys·bind_unix`,
+  `Sys·connect_unix`, `Sys·getenv`, native `Sys·listen`/`Sys·accept`/`Sys·socket`
+- **Removed**: `bin/claude-pipe.sh` (replaced by FIFO/socket); `launch.sh` no longer
+  starts the watcher background process
+
+---
+
 ## v0.1.0 — 2026-02-20
 
 First public release. 200/200 tests passing.

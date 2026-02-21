@@ -1,0 +1,5 @@
+O_RDONLY: OK
+O_NONBLOCK: OK
+O_WRONLY: OK
+O_CREAT: OK
+combined: OK

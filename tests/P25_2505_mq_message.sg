@@ -1,0 +1,43 @@
+// Test: mq_message constructs object with sender/recipient/kind/payload/ts fields
+// Spec: Phase 25 - Pane Message Queue
+// Note: "from"/"to" are reserved keywords in Sigil; use sender/recipient
+// Priority: P25
+
+rite mq_message(from_id, to_id, kind, payload) {
+    { sender: from_id, recipient: to_id, kind: kind, payload: payload,
+      ts: to_string(Sys·clock_gettime()) }
+}
+
+rite main() {
+    ≔ msg = mq_message("pane-a", "pane-b", "paste", "hello world");
+
+    ⎇ msg.sender == "pane-a" {
+        println("sender: OK");
+    } ⎉ {
+        println("sender: FAILED got=" + msg.sender);
+    }
+
+    ⎇ msg.recipient == "pane-b" {
+        println("recipient: OK");
+    } ⎉ {
+        println("recipient: FAILED got=" + msg.recipient);
+    }
+
+    ⎇ msg.kind == "paste" {
+        println("kind: OK");
+    } ⎉ {
+        println("kind: FAILED got=" + msg.kind);
+    }
+
+    ⎇ msg.payload == "hello world" {
+        println("payload: OK");
+    } ⎉ {
+        println("payload: FAILED got=" + msg.payload);
+    }
+
+    ⎇ msg.ts != "" {
+        println("ts: OK");
+    } ⎉ {
+        println("ts: FAILED (empty)");
+    }
+}

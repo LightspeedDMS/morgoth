@@ -1,0 +1,48 @@
+// Test: Sys·socket + Sys·bind_unix + Sys·listen creates a usable Unix socket
+// Spec: Phase 25 - Pane Message Queue
+// Priority: P25
+
+rite main() {
+    ≔ sock_path = "/tmp/morgoth_test_p25_2511.sock";
+
+    // Remove stale socket
+    ⎇ fs_exists(sock_path) == true { fs_remove(sock_path); }
+
+    // Create server socket (AF_UNIX=1, SOCK_STREAM=1, 0)
+    ≔ server_fd = Sys·socket(1, 1, 0);
+    ⎇ server_fd < 0 {
+        println("socket: FAILED fd=" + to_string(server_fd));
+        ↩ null;
+    }
+    println("socket: OK");
+
+    // Bind to path
+    ≔ bind_ret = Sys·bind_unix(server_fd, sock_path);
+    ⎇ bind_ret < 0 {
+        println("bind: FAILED ret=" + to_string(bind_ret));
+        Sys·close(server_fd);
+        ↩ null;
+    }
+    println("bind: OK");
+
+    // Socket file should now exist on disk
+    ⎇ fs_exists(sock_path) == true {
+        println("socket_file: OK");
+    } ⎉ {
+        println("socket_file: FAILED (not created)");
+    }
+
+    // Listen
+    ≔ listen_ret = Sys·listen(server_fd, 4);
+    ⎇ listen_ret < 0 {
+        println("listen: FAILED ret=" + to_string(listen_ret));
+        Sys·close(server_fd);
+        ↩ null;
+    }
+    println("listen: OK");
+
+    // Cleanup
+    Sys·close(server_fd);
+    ⎇ fs_exists(sock_path) == true { fs_remove(sock_path); }
+    println("cleanup: OK");
+}

@@ -1,0 +1,52 @@
+// Test: write_registry writes JSON array with id/role/fifo for alive panes
+// Spec: Phase 25 - Pane Message Queue
+// Priority: P25
+
+rite mq_registry_path() { env("HOME") + "/.morgoth/test_p25_2509_registry.json" }
+
+rite write_registry(panes) {
+    ≔ mut entries = [];
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ⎇ panes[i].alive == true {
+            push(entries, "{\"id\":\"" + panes[i].id + "\",\"role\":\"" +
+                          panes[i].role + "\",\"fifo\":\"" + panes[i].fifo_path + "\"}");
+        }
+        i = i + 1;
+    }
+    ≔ content = "[" + join(entries, ",") + "]\n";
+    fs_write(mq_registry_path(), content);
+}
+
+rite main() {
+    ≔ path = mq_registry_path();
+    ⎇ fs_exists(path) == true { fs_remove(path); }
+
+    ≔ mut panes = [];
+    push(panes, { id: "uuid-111", role: "terminal", fifo_path: "/tmp/fifos/uuid-111", alive: true });
+    push(panes, { id: "uuid-222", role: "claude",   fifo_path: "/tmp/fifos/uuid-222", alive: true });
+    push(panes, { id: "uuid-333", role: "terminal", fifo_path: "",                    alive: false });
+
+    write_registry(panes);
+
+    ⎇ fs_exists(path) == true {
+        println("file_created: OK");
+        ≔ content = fs_read(path);
+        // Should contain alive panes
+        ⎇ contains(content, "uuid-111") ∧ contains(content, "uuid-222") {
+            println("alive_panes: OK");
+        } ⎉ {
+            println("alive_panes: FAILED");
+        }
+        // Should NOT contain dead pane
+        ⎇ contains(content, "uuid-333") == false {
+            println("dead_excluded: OK");
+        } ⎉ {
+            println("dead_excluded: FAILED");
+        }
+    } ⎉ {
+        println("file_created: FAILED");
+    }
+
+    fs_remove(path);
+}

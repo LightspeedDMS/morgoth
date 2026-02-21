@@ -1,0 +1,66 @@
+// Test: mq_load_pending replays persisted messages into pane inboxes
+// Spec: Phase 25 - Pane Message Queue
+// Priority: P25
+
+rite mq_messages_path() { env("HOME") + "/.morgoth/test_p25_2510_messages.jsonl" }
+
+rite mq_load_pending_direct(panes) {
+    ⎇ fs_exists(mq_messages_path()) == false { ↩ null; }
+    ≔ content = fs_read(mq_messages_path());
+    ⎇ content == "" { ↩ null; }
+    ≔ lines = split(content, "\n");
+    ≔ mut i = 0;
+    ⟳ i < len(lines) {
+        ≔ line = lines[i];
+        ⎇ line != "" {
+            ≔ msg = json_parse(line);
+            ⎇ type_of(msg) == "map" {
+                ≔ recip   = map_get(msg, "recipient");
+                ≔ kind    = map_get(msg, "kind");
+                ≔ payload = map_get(msg, "payload");
+                ⎇ recip != null ∧ kind != null ∧ payload != null {
+                    // Deliver directly to matching pane inboxes
+                    ≔ mut pi = 0;
+                    ⟳ pi < len(panes) {
+                        ⎇ panes[pi].id == recip {
+                            push(panes[pi].inbox, { kind: kind, payload: payload });
+                        }
+                        pi = pi + 1;
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+}
+
+rite main() {
+    ≔ path = mq_messages_path();
+    ⎇ fs_exists(path) == true { fs_remove(path); }
+
+    ≔ pane_id = "uuid-target";
+
+    // Write a JSON line that matches the pane
+    ≔ line = "{\"recipient\":\"" + pane_id + "\",\"kind\":\"paste\",\"payload\":\"hi there\"}\n";
+    fs_write(path, line);
+
+    // Setup pane
+    ≔ mut panes = [];
+    push(panes, { id: pane_id, inbox: [] });
+
+    mq_load_pending_direct(panes);
+
+    ⎇ len(panes[0].inbox) == 1 {
+        println("message_delivered: OK");
+        ≔ msg = panes[0].inbox[0];
+        ⎇ msg.payload == "hi there" {
+            println("payload_correct: OK");
+        } ⎉ {
+            println("payload_correct: FAILED got=" + msg.payload);
+        }
+    } ⎉ {
+        println("message_delivered: FAILED len=" + to_string(len(panes[0].inbox)));
+    }
+
+    fs_remove(path);
+}

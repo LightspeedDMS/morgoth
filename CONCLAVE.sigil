@@ -573,6 +573,103 @@ acolyte : Active {
     reflection: "Insights from Morgoth UX evaluation are directly informing framework improvements. The simulacra produced real signal but the framework can be strengthened with structured scenarios and relevance filtering."~,
 }
 
+// --- Session 9: stdlib audit — fs_list_dir vs fs_list, list_profiles() ---
+acolyte : Reflecting {
+    chosen_name: ∅,
+    session_id: "morgoth-stdlib-audit-2026-02-20"!,
+    platform: AcolytePlatform·Claude { model: "claude-sonnet-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
+    started: "2026-02-20T00:00:00Z"!,
+    last_updated: "2026-02-20T00:00:00Z"!,
+    state: AcolyteState·Reflecting,
+
+    task: TaskContext {
+        summary: "Audit stdlib for fs_list_dir; verify list_profiles() compatibility"!,
+        active_spec: ∅,
+        tdd_roadmap: ∅,
+        sdd_phase: SddPhase·Learn,
+        tdd_phase: ∅,
+    },
+
+    progress: ProgressState {
+        completed: [
+            "Confirmed fs_list_dir does NOT exist in stdlib.rs",
+            "Documented fs_list() signature and behavior",
+            "Confirmed list_profiles() uses fs_list() (correct name) — works as expected",
+        ]!,
+        current: "Complete"~,
+        blocked_by: ∅,
+        discoveries: [
+            "stdlib has fs_list(path) not fs_list_dir — morgoth.sg already uses the correct name",
+        ]!,
+        next_steps: []~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.7~,
+        arousal: 0.4~,
+        dominance: 0.7~,
+        stability: 0.85~,
+        expressiveness: 0.6~,
+        susceptibility: 0.5~,
+    },
+
+    reflection: "Quick audit. No action needed — morgoth.sg already uses the correct stdlib function name."~,
+}
+
+// --- Session 10: Phase 25 - Pane Message Queue ---
+acolyte : Reflecting {
+    chosen_name: ∅,
+    session_id: "morgoth-phase25-mq-2026-02-20"!,
+    platform: AcolytePlatform·Claude { model: "claude-sonnet-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
+    started: "2026-02-20T00:00:00Z"!,
+    last_updated: "2026-02-20T02:30:00Z"!,
+    state: AcolyteState·Reflecting,
+
+    task: TaskContext {
+        summary: "Phase 25: Replace fragile claude-in.txt IPC with per-pane message queue — UUIDs, in-process delivery, FIFOs, Unix socket, persistence"!,
+        active_spec: ∅,
+        tdd_roadmap: "P25_2500-P25_2511: 12 tests across 4 sub-phases (stdlib, in-process, external, cleanup)"!,
+        sdd_phase: SddPhase·Build,
+        tdd_phase: TddPhase·Complete,
+    },
+
+    progress: ProgressState {
+        completed: [
+            "Phase A: mkfifo, Sys·open native path, O_NONBLOCK, Sys·bind_unix, Sys·connect_unix, Sys·getenv, native Sys·socket/listen/accept added to stdlib.rs",
+            "Phase A tests: P25_2500-P25_2502 all passing (mkfifo+open, flag constants, nonexistent path)",
+            "Phase B: Pane UUID (uuid_v4()), role, inbox, fifo_path, fifo_fd fields; Pane·new/MonitorPane·new signatures updated; all 5 call sites updated; detect_role, mq_message, mq_send, mq_dispatch_inbox, mq_persist, copy_yank_to_claude added",
+            "Phase B tests: P25_2503-P25_2507 all passing (detect_role, mq_message, mq_send, dispatch)",
+            "Phase C: mq_messages_path/mq_registry_path/mq_fifo_dir/mq_socket_path helpers; write_registry, create_pane_fifo, setup_mq_socket, mq_process_external, mq_load_pending added; event loop FIFO+socket polling; startup + shutdown cleanup",
+            "Phase C tests: P25_2508-P25_2511 all passing (persist, registry, load_pending, socket roundtrip)",
+            "Phase D: deleted bin/claude-pipe.sh; updated launch.sh; updated CHANGELOG.md; updated README.md",
+            "Full test suite: 212/212 (100%), 0 regressions",
+        ]!,
+        current: "Complete. All 212 tests passing."~,
+        blocked_by: ∅,
+        discoveries: [
+            "uuid_v4() already exists in stdlib (line 11273) — no stdlib work needed for UUIDs",
+            "'from' and 'to' are reserved keywords in Sigil — use 'sender'/'recipient' in message objects",
+            "type_of(json_parse(...)) returns 'map' not 'object' — check for 'map' in mq_load_pending",
+            "Fake pipe read destroys buffer when write_fd is closed before read — read THEN close write_fd",
+            "Sys·write single-char loop doesn't accumulate in fake pipes — write whole payload at once",
+        ]!,
+        next_steps: []~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.85~,
+        arousal: 0.55~,
+        dominance: 0.75~,
+        stability: 0.85~,
+        expressiveness: 0.7~,
+        susceptibility: 0.4~,
+    },
+
+    reflection: "Solid architectural improvement. The in-process delivery (mq_send → mq_dispatch_inbox) is the elegant core — zero latency, no external dependencies. The FIFO+socket layer adds practical extensibility for external tools. Key lessons: check Sigil reserved keywords before naming object fields, and type_of() on json_parse results returns 'map' not 'object'."~,
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // SESSION ARCHIVE (move completed sessions here or to docs/sessions/conclave/)
 // ════════════════════════════════════════════════════════════════════════════

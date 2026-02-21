@@ -1,0 +1,23 @@
+// Test: Sys·open on a nonexistent path returns negative (error)
+// Spec: Phase 25 - Pane Message Queue (stdlib additions)
+// Priority: P25
+
+rite main() {
+    // Path that definitely does not exist
+    ≔ fd = Sys·open("/tmp/morgoth_test_p25_2502_does_not_exist_xyz987.fifo", O_RDONLY());
+    ⎇ fd < 0 {
+        println("open_nonexistent: OK");
+    } ⎉ {
+        // File somehow existed — close and report unexpected
+        Sys·close(fd);
+        println("open_nonexistent: UNEXPECTED fd=" + to_string(fd));
+    }
+
+    // Also verify Sys·getenv works (needed for HOME path expansion)
+    ≔ home = Sys·getenv("HOME");
+    ⎇ home != "" {
+        println("getenv_HOME: OK");
+    } ⎉ {
+        println("getenv_HOME: empty (may be unset)");
+    }
+}

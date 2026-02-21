@@ -1,0 +1,52 @@
+// Test: mq_persist appends a JSON line to messages.jsonl
+// Spec: Phase 25 - Pane Message Queue
+// Priority: P25
+
+rite mq_messages_path() { env("HOME") + "/.morgoth/test_p25_2508_messages.jsonl" }
+
+rite mq_persist(msg) {
+    ≔ line = "{\"sender\":\"" + msg.sender + "\",\"recipient\":\"" + msg.recipient +
+             "\",\"kind\":\"" + msg.kind + "\",\"payload\":\"" + msg.payload +
+             "\",\"ts\":\"" + msg.ts + "\"}\n";
+    fs_append(mq_messages_path(), line);
+}
+
+rite main() {
+    // Clean up before test
+    ≔ path = mq_messages_path();
+    ⎇ fs_exists(path) == true { fs_remove(path); }
+
+    ≔ msg = { sender: "pane-a", recipient: "pane-b", kind: "paste",
+              payload: "hello", ts: "1234567890" };
+
+    mq_persist(msg);
+
+    // File should exist and contain the line
+    ⎇ fs_exists(path) == true {
+        println("file_created: OK");
+        ≔ content = fs_read(path);
+        ⎇ contains(content, "pane-a") ∧ contains(content, "paste") ∧ contains(content, "hello") {
+            println("content: OK");
+        } ⎉ {
+            println("content: FAILED got=" + content);
+        }
+    } ⎉ {
+        println("file_created: FAILED");
+    }
+
+    // Append a second message and verify two lines
+    ≔ msg2 = { sender: "pane-b", recipient: "pane-a", kind: "paste",
+               payload: "world", ts: "1234567891" };
+    mq_persist(msg2);
+    ≔ content2 = fs_read(path);
+    ≔ lines = split(content2, "\n");
+    // split("a\nb\n", "\n") → ["a", "b", ""] — 3 elements for 2 lines
+    ⎇ len(lines) >= 3 {
+        println("two_lines: OK");
+    } ⎉ {
+        println("two_lines: FAILED len=" + to_string(len(lines)));
+    }
+
+    // Cleanup
+    fs_remove(path);
+}

@@ -1,0 +1,24 @@
+// Test: detect_role returns "claude" for Claude Code titles
+// Spec: Phase 25 - Pane Message Queue
+// Priority: P25
+
+rite detect_role(title) {
+    ⎇ contains(title, "Claude") ∨ contains(title, "✳") { ↩ "claude"; }
+    ↩ "terminal";
+}
+
+rite main() {
+    ≔ r1 = detect_role("✳ Claude Code");
+    ⎇ r1 == "claude" {
+        println("claude_glyph: OK");
+    } ⎉ {
+        println("claude_glyph: FAILED got=" + r1);
+    }
+
+    ≔ r2 = detect_role("Claude Code - /home/user/project");
+    ⎇ r2 == "claude" {
+        println("claude_word: OK");
+    } ⎉ {
+        println("claude_word: FAILED got=" + r2);
+    }
+}

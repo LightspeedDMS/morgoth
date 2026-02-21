@@ -25,17 +25,7 @@ export COLORTERM=truecolor
 # Save terminal state
 saved=$(stty -g)
 
-# Start claude-pipe watcher when running inside tmux.
-# It watches ~/.morgoth/claude-in.txt and injects yanked text into the
-# Claude Code pane so copy-mode yank flows directly to Claude's input box.
-CLAUDE_PIPE_PID=""
-if [ -n "$TMUX" ]; then
-    "${SCRIPT_DIR}/bin/claude-pipe.sh" &
-    CLAUDE_PIPE_PID=$!
-fi
-
 cleanup() {
-    [ -n "$CLAUDE_PIPE_PID" ] && kill "$CLAUDE_PIPE_PID" 2>/dev/null
     stty "$saved" 2>/dev/null
     printf '\033[?25h\033[?1003l\033[?1006l\033[?1049l'
     echo "Terminal restored."

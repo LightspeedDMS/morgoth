@@ -1,0 +1,45 @@
+// Test: O_RDONLY and O_NONBLOCK constants have correct values
+// Spec: Phase 25 - Pane Message Queue (stdlib additions)
+// Priority: P25
+
+rite main() {
+    // O_RDONLY must be 0 (read-only, no write bit)
+    ≔ rdonly = O_RDONLY();
+    ⎇ rdonly == 0 {
+        println("O_RDONLY: OK");
+    } ⎉ {
+        println("O_RDONLY: FAILED value=" + to_string(rdonly));
+    }
+
+    // O_NONBLOCK must be > 0 (non-blocking flag, Linux: 2048)
+    ≔ nonblock = O_NONBLOCK();
+    ⎇ nonblock > 0 {
+        println("O_NONBLOCK: OK");
+    } ⎉ {
+        println("O_NONBLOCK: FAILED value=" + to_string(nonblock));
+    }
+
+    // O_WRONLY must be 1
+    ≔ wronly = O_WRONLY();
+    ⎇ wronly == 1 {
+        println("O_WRONLY: OK");
+    } ⎉ {
+        println("O_WRONLY: FAILED value=" + to_string(wronly));
+    }
+
+    // O_CREAT must be 64 (Linux)
+    ≔ creat = O_CREAT();
+    ⎇ creat == 64 {
+        println("O_CREAT: OK");
+    } ⎉ {
+        println("O_CREAT: FAILED value=" + to_string(creat));
+    }
+
+    // Combined O_RDONLY + O_NONBLOCK is non-zero (O_NONBLOCK dominates)
+    ≔ combined = O_RDONLY() + O_NONBLOCK();
+    ⎇ combined > 0 {
+        println("combined: OK");
+    } ⎉ {
+        println("combined: FAILED value=" + to_string(combined));
+    }
+}

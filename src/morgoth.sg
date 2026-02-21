@@ -80,7 +80,7 @@ rite Region·new(x, y, w, h) {
 }
 
 // A Pane: owns a PTY, a shell process, and a screen region
-rite Pane·new(id, region, shell) {
+rite Pane·new(region, shell) {
     ≔ pty = Pty·open();
     Pty·set_size(pty.master_fd, region.h - 2, region.w - 2);
 
@@ -93,13 +93,17 @@ rite Pane·new(id, region, shell) {
     ≔ vt = VTerm·new(region.h - 2, region.w - 2);
 
     ≔ pane = {
-        id: id,
+        id: uuid_v4(),
         region: region,
         master_fd: pty.master_fd,
         slave_fd: -1,
         pid: pid,
         alive: true,
         title: "bash",
+        role: "terminal",
+        inbox: [],
+        fifo_path: "",
+        fifo_fd: -1,
         vterm: vt,
         pane_type: "terminal"
     };
@@ -107,17 +111,21 @@ rite Pane·new(id, region, shell) {
 }
 
 // A Monitor Pane: no PTY, renders system info
-rite MonitorPane·new(id, region) {
+rite MonitorPane·new(region) {
     ≔ vt = VTerm·new(region.h - 2, region.w - 2);
 
     ≔ pane = {
-        id: id,
+        id: uuid_v4(),
         region: region,
         master_fd: -1,
         slave_fd: -1,
         pid: -1,
         alive: false,
         title: "monitor",
+        role: "monitor",
+        inbox: [],
+        fifo_path: "",
+        fifo_fd: -1,
         vterm: vt,
         pane_type: "monitor"
     };
@@ -125,7 +133,161 @@ rite MonitorPane·new(id, region) {
 }
 
 // ============================================================================
-// Section 2b: VTerm — Virtual Terminal Emulator
+// Section 2b: Message Queue — Per-Pane In-Process Delivery
+// ============================================================================
+
+// Detect the role of a pane from its OSC title
+rite detect_role(title) {
+    ⎇ contains(title, "Claude") ∨ contains(title, "✳") { ↩ "claude"; }
+    ↩ "terminal";
+}
+
+// Construct a message object
+// Note: "from"/"to" are reserved in Sigil — use "sender"/"recipient"
+rite mq_message(from_id, to_id, kind, payload) {
+    { sender: from_id, recipient: to_id, kind: kind, payload: payload,
+      ts: to_string(Sys·clock_gettime()) }
+}
+
+// Deliver a message to a pane's inbox (and persist it)
+rite mq_send(panes, from_id, to_id, kind, payload) {
+    ≔ msg = mq_message(from_id, to_id, kind, payload);
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ⎇ panes[i].id == to_id {
+            push(panes[i].inbox, msg);
+        }
+        i = i + 1;
+    }
+    mq_persist(msg);
+}
+
+// Process all messages in a pane's inbox
+rite mq_dispatch_inbox(pane) {
+    ≔ mut i = 0;
+    ⟳ i < len(pane.inbox) {
+        ≔ msg = pane.inbox[i];
+        ⎇ msg.kind == "paste" {
+            // Write payload directly to pane's PTY master
+            Sys·write(pane.master_fd, msg.payload, len(msg.payload));
+        }
+        i = i + 1;
+    }
+    pane.inbox = [];
+}
+
+// Persist a message to messages.jsonl
+rite mq_persist(msg) {
+    ≔ line = "{\"sender\":\"" + msg.sender + "\",\"recipient\":\"" + msg.recipient +
+             "\",\"kind\":\"" + msg.kind + "\",\"payload\":\"" + msg.payload +
+             "\",\"ts\":\"" + msg.ts + "\"}\n";
+    fs_append(mq_messages_path(), line);
+}
+
+// Yank selected text: OSC 52 clipboard + deliver to focused claude pane via MQ
+rite copy_yank_to_claude(panes, focus, text) {
+    write_clipboard(text);
+    ≔ mut i = 0;
+    ≔ mut found = false;
+    ⟳ i < len(panes) ∧ found == false {
+        ⎇ panes[i].role == "claude" ∧ panes[i].alive == true {
+            mq_send(panes, panes[focus].id, panes[i].id, "paste", text);
+            found = true;
+        }
+        i = i + 1;
+    }
+}
+
+// ============================================================================
+// Section 2d: External MQ Interface — FIFOs, Socket, Persistence, Registry
+// ============================================================================
+
+// Path helpers (computed at call time from HOME)
+rite mq_messages_path() { env("HOME") + "/.morgoth/messages.jsonl" }
+rite mq_registry_path() { env("HOME") + "/.morgoth/registry.json" }
+rite mq_fifo_dir()      { env("HOME") + "/.morgoth/fifos" }
+rite mq_socket_path()   { env("HOME") + "/.morgoth/morgoth.sock" }
+
+// Write pane registry to ~/.morgoth/registry.json
+rite write_registry(panes) {
+    ≔ mut entries = [];
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ⎇ panes[i].alive == true {
+            push(entries, "{\"id\":\"" + panes[i].id + "\",\"role\":\"" +
+                          panes[i].role + "\",\"fifo\":\"" + panes[i].fifo_path + "\"}");
+        }
+        i = i + 1;
+    }
+    ≔ content = "[" + join(entries, ",") + "]\n";
+    fs_write(mq_registry_path(), content);
+}
+
+// Create a per-pane FIFO and open it non-blocking for reading
+rite create_pane_fifo(pane) {
+    ≔ path = mq_fifo_dir() + "/" + pane.id;
+    mkfifo(path, 384);
+    ≔ fd = Sys·open(path, O_RDONLY() + O_NONBLOCK());
+    pane.fifo_path = path;
+    pane.fifo_fd   = fd;
+}
+
+// Create Unix domain socket at mq_socket_path, return listening fd
+rite setup_mq_socket() {
+    ≔ sock_path = mq_socket_path();
+    ⎇ fs_exists(sock_path) == true { fs_remove(sock_path); }
+    ≔ fd = Sys·socket(1, 1, 0);
+    ⎇ fd < 0 { ↩ -1; }
+    ≔ ret = Sys·bind_unix(fd, sock_path);
+    ⎇ ret < 0 { Sys·close(fd); ↩ -1; }
+    Sys·listen(fd, 8);
+    ↩ fd;
+}
+
+// Accept one client on socket, parse JSON message, dispatch via mq_send
+rite mq_process_external(panes, sock_fd) {
+    ≔ client = Sys·accept(sock_fd, 0, 0);
+    ⎇ client < 0 { ↩ null; }
+    ≔ data = Sys·read_string(client, 4096);
+    Sys·close(client);
+    ⎇ data == "" { ↩ null; }
+    ≔ msg = json_parse(data);
+    ⎇ type_of(msg) == "map" {
+        ≔ recip   = map_get(msg, "recipient");
+        ≔ kind    = map_get(msg, "kind");
+        ≔ payload = map_get(msg, "payload");
+        ⎇ recip != null ∧ kind != null ∧ payload != null {
+            mq_send(panes, "external", recip, kind, payload);
+        }
+    }
+}
+
+// Replay messages.jsonl into pane inboxes on startup
+rite mq_load_pending(panes) {
+    ⎇ fs_exists(mq_messages_path()) == false { ↩ null; }
+    ≔ content = fs_read(mq_messages_path());
+    ⎇ content == "" { ↩ null; }
+    ≔ lines = split(content, "\n");
+    ≔ mut i = 0;
+    ⟳ i < len(lines) {
+        ≔ line = lines[i];
+        ⎇ line != "" {
+            ≔ msg = json_parse(line);
+            ⎇ type_of(msg) == "map" {
+                ≔ recip   = map_get(msg, "recipient");
+                ≔ kind    = map_get(msg, "kind");
+                ≔ payload = map_get(msg, "payload");
+                ⎇ recip != null ∧ kind != null ∧ payload != null {
+                    mq_send(panes, "external", recip, kind, payload);
+                }
+            }
+        }
+        i = i + 1;
+    }
+}
+
+// ============================================================================
+// Section 2c: VTerm — Virtual Terminal Emulator
 // ============================================================================
 
 // Create a new VTerm with given interior dimensions
@@ -2971,12 +3133,25 @@ rite main() {
     ≔ mut i = 0;
     ⟳ i < len(pane_types) {
         ⎇ pane_types[i] == "monitor" {
-            push(panes, MonitorPane·new(i, regions[i]));
+            push(panes, MonitorPane·new(regions[i]));
         } ⎉ {
-            push(panes, Pane·new(i, regions[i], cfg.shell));
+            push(panes, Pane·new(regions[i], cfg.shell));
         }
         i = i + 1;
     }
+
+    // Setup MQ infrastructure: FIFO dir, per-pane FIFOs, Unix socket
+    Sys·spawn_bg("mkdir", ["-p", mq_fifo_dir()]);
+    ≔ mut mq_fi = 0;
+    ⟳ mq_fi < len(panes) {
+        ⎇ panes[mq_fi].pane_type == "terminal" {
+            create_pane_fifo(panes[mq_fi]);
+        }
+        mq_fi = mq_fi + 1;
+    }
+    ≔ mut mq_sock_fd = setup_mq_socket();
+    write_registry(panes);
+    mq_load_pending(panes);
 
     // Create screen buffer
     ≔ mut screen = Grid·new(screen_h, screen_w);
@@ -3085,7 +3260,7 @@ rite main() {
             flush_dirty(screen);
         }
 
-        // Build fd list for batch poll: stdin + alive terminal panes
+        // Build fd list for batch poll: stdin + alive terminal panes + FIFOs + socket
         ≔ mut poll_fds_arr = [];
         ≔ mut pane_fd_map = [];
         push(poll_fds_arr, 0);
@@ -3097,6 +3272,18 @@ rite main() {
             }
             i = i + 1;
         }
+        // Per-pane FIFOs (for external producers)
+        ≔ mut fifo_fd_map = [];
+        i = 0;
+        ⟳ i < len(panes) {
+            ⎇ panes[i].alive == true ∧ panes[i].fifo_fd >= 0 {
+                push(poll_fds_arr, panes[i].fifo_fd);
+                push(fifo_fd_map, i);
+            }
+            i = i + 1;
+        }
+        // Unix socket (for structured external clients)
+        ⎇ mq_sock_fd >= 0 { push(poll_fds_arr, mq_sock_fd); }
 
         // One batch poll per iteration — blocks up to POLL_INTERVAL_MS when idle
         ≔ mut poll_timeout = 0;
@@ -3231,7 +3418,7 @@ rite main() {
                     } ⎉ { ⎇ action == "create_terminal" {
                         ⎇ len(panes) < cfg.max_panes {
                             ≔ tmp_region = Region·new(0, 0, 40, 12);
-                            push(panes, Pane·new(len(panes) - 1, tmp_region, cfg.shell));
+                            push(panes, Pane·new(tmp_region, cfg.shell));
                             focus = len(panes) - 1;
                             screen = Grid·new(screen_h, screen_w);
                             ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
@@ -3247,7 +3434,7 @@ rite main() {
                     } ⎉ { ⎇ action == "create_monitor" {
                         ⎇ len(panes) < cfg.max_panes {
                             ≔ tmp_region = Region·new(0, 0, 40, 12);
-                            push(panes, MonitorPane·new(len(panes) - 1, tmp_region));
+                            push(panes, MonitorPane·new(tmp_region));
                             focus = len(panes) - 1;
                             screen = Grid·new(screen_h, screen_w);
                             ≔ gl = relayout_panes(panes, screen_w, screen_h, screen, focus);
@@ -3320,7 +3507,7 @@ rite main() {
                             ≔ np = len(panes) + 1;
                             forced_rows = (np + forced_cols - 1) / forced_cols;
                             ≔ tmp_r = Region·new(0, 0, 40, 12);
-                            push(panes, Pane·new(len(panes), tmp_r, cfg.shell));
+                            push(panes, Pane·new(tmp_r, cfg.shell));
                             focus = len(panes) - 1;
                             screen = Grid·new(screen_h, screen_w);
                             relayout_panes_forced(panes, screen_w, screen_h, screen, focus, forced_rows, forced_cols);
@@ -3344,7 +3531,7 @@ rite main() {
                             ≔ np = len(panes) + 1;
                             forced_cols = (np + forced_rows - 1) / forced_rows;
                             ≔ tmp_r = Region·new(0, 0, 40, 12);
-                            push(panes, Pane·new(len(panes), tmp_r, cfg.shell));
+                            push(panes, Pane·new(tmp_r, cfg.shell));
                             focus = len(panes) - 1;
                             screen = Grid·new(screen_h, screen_w);
                             relayout_panes_forced(panes, screen_w, screen_h, screen, focus, forced_rows, forced_cols);
@@ -3419,11 +3606,7 @@ rite main() {
                         ≔ mut yank_msg = "";
                         ⎇ cm.selecting == true {
                             ≔ text = extract_selection(cm);
-                            write_clipboard(text);
-                            // Also write to claude-in.txt for external hook integration
-                            ≔ ci_dir = env("HOME") + "/.morgoth";
-                            ⎇ fs_exists(ci_dir) == false { fs_mkdir(ci_dir); }
-                            fs_write(ci_dir + "/claude-in.txt", text);
+                            copy_yank_to_claude(panes, focus, text);
                             // Count lines in selection
                             ≔ mut sr = cm.select_start_row;
                             ≔ mut er = cm.cursor_row;
@@ -3492,9 +3675,9 @@ rite main() {
                         ≔ mut npi = 0;
                         ⟳ npi < len(new_pane_types) {
                             ⎇ new_pane_types[npi] == "monitor" {
-                                push(panes, MonitorPane·new(npi, new_regions[npi]));
+                                push(panes, MonitorPane·new(new_regions[npi]));
                             } ⎉ {
-                                push(panes, Pane·new(npi, new_regions[npi], cfg.shell));
+                                push(panes, Pane·new(new_regions[npi], cfg.shell));
                             }
                             npi = npi + 1;
                         }
@@ -3623,7 +3806,8 @@ rite main() {
                     had_activity = true;
                     // Update pane title from VTerm if set by OSC
                     ⎇ panes[pane_i].vterm.title != "" {
-                        panes[pane_i].title = panes[pane_i].vterm.title;
+                        panes[pane_i].title = sanitize_title(panes[pane_i].vterm.title);
+                        panes[pane_i].role  = detect_role(panes[pane_i].title);
                     }
                     // Only render if not zoomed or this is the focused pane, and not in copy mode for focused
                     ⎇ (zoomed == false ∨ pane_i == focus) ∧ (input.copy_mode.active == false ∨ pane_i != focus) {
@@ -3658,6 +3842,34 @@ rite main() {
                 }
             }
             di = di + 1;
+        }
+
+        // Process ready FIFOs (external producers writing to per-pane fifos)
+        ≔ mut fii = 0;
+        ⟳ fii < len(fifo_fd_map) {
+            ≔ fifo_poll_idx = 1 + len(pane_fd_map) + fii;
+            ⎇ poll_ready[fifo_poll_idx] == true {
+                ≔ fifo_pane_i = fifo_fd_map[fii];
+                ≔ data = Sys·read_string(panes[fifo_pane_i].fifo_fd, 4096);
+                ⎇ data != "" {
+                    mq_send(panes, "external", panes[fifo_pane_i].id, "paste", data);
+                }
+            }
+            fii = fii + 1;
+        }
+        // Process ready Unix socket (structured external clients)
+        ≔ sock_poll_idx = 1 + len(pane_fd_map) + len(fifo_fd_map);
+        ⎇ mq_sock_fd >= 0 ∧ poll_ready[sock_poll_idx] == true {
+            mq_process_external(panes, mq_sock_fd);
+        }
+
+        // Drain pane inboxes (in-process MQ delivery)
+        ≔ mut ii = 0;
+        ⟳ ii < len(panes) {
+            ⎇ panes[ii].alive == true ∧ len(panes[ii].inbox) > 0 {
+                mq_dispatch_inbox(panes[ii]);
+            }
+            ii = ii + 1;
         }
 
         // Monitor pane refresh (~2 seconds at 16ms)
@@ -3712,7 +3924,15 @@ rite main() {
         had_activity_prev = had_activity;
     }
 
-    // Shutdown
+    // Shutdown — close FIFOs and MQ socket
+    ≔ mut sdi = 0;
+    ⟳ sdi < len(panes) {
+        ⎇ panes[sdi].fifo_fd >= 0 { Sys·close(panes[sdi].fifo_fd); }
+        sdi = sdi + 1;
+    }
+    ⎇ mq_sock_fd >= 0 { Sys·close(mq_sock_fd); }
+    // Clean up registry and socket file
+    ⎇ fs_exists(mq_socket_path()) == true { fs_remove(mq_socket_path()); }
     shutdown_panes(panes);
     terminal_shutdown(saved_termios);
 }

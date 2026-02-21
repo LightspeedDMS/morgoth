@@ -1,0 +1,53 @@
+// Test: mq_send delivers message to the matching pane's inbox
+// Spec: Phase 25 - Pane Message Queue
+// Priority: P25
+
+rite mq_message(from_id, to_id, kind, payload) {
+    { sender: from_id, recipient: to_id, kind: kind, payload: payload,
+      ts: to_string(Sys·clock_gettime()) }
+}
+
+rite mq_send(panes, from_id, to_id, kind, payload) {
+    ≔ msg = mq_message(from_id, to_id, kind, payload);
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ⎇ panes[i].id == to_id {
+            push(panes[i].inbox, msg);
+        }
+        i = i + 1;
+    }
+}
+
+rite main() {
+    // Build two fake panes
+    ≔ mut panes = [];
+    push(panes, { id: "uuid-aaa", inbox: [], role: "terminal" });
+    push(panes, { id: "uuid-bbb", inbox: [], role: "claude"   });
+
+    // Send to pane-bbb
+    mq_send(panes, "uuid-aaa", "uuid-bbb", "paste", "hello");
+
+    // Pane 0 should have empty inbox
+    ⎇ len(panes[0].inbox) == 0 {
+        println("no_delivery_wrong_pane: OK");
+    } ⎉ {
+        println("no_delivery_wrong_pane: FAILED len=" + to_string(len(panes[0].inbox)));
+    }
+
+    // Pane 1 should have one message
+    ⎇ len(panes[1].inbox) == 1 {
+        println("delivery_correct_pane: OK");
+    } ⎉ {
+        println("delivery_correct_pane: FAILED len=" + to_string(len(panes[1].inbox)));
+    }
+
+    // Message content check
+    ⎇ len(panes[1].inbox) == 1 {
+        ≔ msg = panes[1].inbox[0];
+        ⎇ msg.kind == "paste" ∧ msg.payload == "hello" {
+            println("msg_content: OK");
+        } ⎉ {
+            println("msg_content: FAILED kind=" + msg.kind + " payload=" + msg.payload);
+        }
+    }
+}

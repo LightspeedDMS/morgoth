@@ -1,0 +1,47 @@
+// Test: mq_dispatch_inbox writes paste payload chars to master_fd and clears inbox
+// Spec: Phase 25 - Pane Message Queue
+// Priority: P25
+
+rite mq_dispatch_inbox(pane) {
+    ≔ mut i = 0;
+    ⟳ i < len(pane.inbox) {
+        ≔ msg = pane.inbox[i];
+        ⎇ msg.kind == "paste" {
+            Sys·write(pane.master_fd, msg.payload, len(msg.payload));
+        }
+        i = i + 1;
+    }
+    pane.inbox = [];
+}
+
+rite main() {
+    // Create a pipe: write end is master_fd for our fake pane
+    ≔ pipe = Sys·pipe();
+    ≔ read_fd  = pipe.read_fd;
+    ≔ write_fd = pipe.write_fd;
+
+    ≔ msg = { kind: "paste", payload: "hi" };
+    ≔ mut inbox = [];
+    push(inbox, msg);
+    ≔ mut pane = { master_fd: write_fd, inbox: inbox };
+
+    mq_dispatch_inbox(pane);
+
+    // Inbox should be cleared
+    ⎇ len(pane.inbox) == 0 {
+        println("inbox_cleared: OK");
+    } ⎉ {
+        println("inbox_cleared: FAILED len=" + to_string(len(pane.inbox)));
+    }
+
+    // Read back what was written to the pipe (read before closing write end)
+    ≔ data = Sys·read_string(read_fd, 16);
+    Sys·close(write_fd);
+    Sys·close(read_fd);
+
+    ⎇ data == "hi" {
+        println("payload_written: OK");
+    } ⎉ {
+        println("payload_written: FAILED got=" + data);
+    }
+}

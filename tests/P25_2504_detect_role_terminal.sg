@@ -1,0 +1,31 @@
+// Test: detect_role returns "terminal" for non-Claude titles
+// Spec: Phase 25 - Pane Message Queue
+// Priority: P25
+
+rite detect_role(title) {
+    ⎇ contains(title, "Claude") ∨ contains(title, "✳") { ↩ "claude"; }
+    ↩ "terminal";
+}
+
+rite main() {
+    ≔ r1 = detect_role("bash");
+    ⎇ r1 == "terminal" {
+        println("bash: OK");
+    } ⎉ {
+        println("bash: FAILED got=" + r1);
+    }
+
+    ≔ r2 = detect_role("vim ~/.bashrc");
+    ⎇ r2 == "terminal" {
+        println("vim: OK");
+    } ⎉ {
+        println("vim: FAILED got=" + r2);
+    }
+
+    ≔ r3 = detect_role("");
+    ⎇ r3 == "terminal" {
+        println("empty: OK");
+    } ⎉ {
+        println("empty: FAILED got=" + r3);
+    }
+}

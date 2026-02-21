@@ -1,0 +1,32 @@
+// Test: mkfifo creates named pipe, Sys·open with O_RDONLY+O_NONBLOCK gets real fd
+// Spec: Phase 25 - Pane Message Queue (stdlib additions)
+// Priority: P25
+
+rite main() {
+    ≔ path = "/tmp/morgoth_test_p25_2500.fifo";
+
+    // Clean up any existing file from a previous test run
+    Sys·spawn_bg("rm", ["-f", path]);
+
+    // Create the FIFO (mode 0o600 = 384)
+    ≔ ret = mkfifo(path, 384);
+    // Accept 0 (success) or -17 (EEXIST if stale file remains)
+    ⎇ ret == 0 ∨ ret == -17 {
+        println("mkfifo: OK");
+    } ⎉ {
+        println("mkfifo: FAILED ret=" + to_string(ret));
+    }
+
+    // Open for reading with O_RDONLY + O_NONBLOCK — must not block without writer
+    ≔ flags = O_RDONLY() + O_NONBLOCK();
+    ≔ fd = Sys·open(path, flags);
+    ⎇ fd >= 0 {
+        println("open: OK");
+        Sys·close(fd);
+    } ⎉ {
+        println("open: FAILED fd=" + to_string(fd));
+    }
+
+    // Clean up
+    Sys·spawn_bg("rm", ["-f", path]);
+}
