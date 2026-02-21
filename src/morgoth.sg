@@ -263,9 +263,15 @@ rite mq_process_external(panes, sock_fd) {
 }
 
 // Replay messages.jsonl into pane inboxes on startup
+// Replay messages.jsonl into pane inboxes, then clear the file.
+// Uses direct inbox push (not mq_send) to avoid re-persisting replayed messages.
+// Pane UUIDs are fresh each startup, so only messages queued in the same
+// session will match; unmatched messages are silently discarded.
 rite mq_load_pending(panes) {
     ⎇ fs_exists(mq_messages_path()) == false { ↩ null; }
     ≔ content = fs_read(mq_messages_path());
+    // Clear the file immediately so it doesn't grow unboundedly across restarts
+    fs_write(mq_messages_path(), "");
     ⎇ content == "" { ↩ null; }
     ≔ lines = split(content, "\n");
     ≔ mut i = 0;
@@ -278,7 +284,14 @@ rite mq_load_pending(panes) {
                 ≔ kind    = map_get(msg, "kind");
                 ≔ payload = map_get(msg, "payload");
                 ⎇ recip != null ∧ kind != null ∧ payload != null {
-                    mq_send(panes, "external", recip, kind, payload);
+                    // Push directly — bypass mq_persist to avoid re-writing replayed msgs
+                    ≔ mut pi = 0;
+                    ⟳ pi < len(panes) {
+                        ⎇ panes[pi].id == recip {
+                            push(panes[pi].inbox, { kind: kind, payload: payload });
+                        }
+                        pi = pi + 1;
+                    }
                 }
             }
         }
@@ -3141,7 +3154,9 @@ rite main() {
     }
 
     // Setup MQ infrastructure: FIFO dir, per-pane FIFOs, Unix socket
-    Sys·spawn_bg("mkdir", ["-p", mq_fifo_dir()]);
+    // Synchronous dir creation — fs_mkdir is a no-op if dir already exists
+    fs_mkdir(env("HOME") + "/.morgoth");
+    fs_mkdir(mq_fifo_dir());
     ≔ mut mq_fi = 0;
     ⟳ mq_fi < len(panes) {
         ⎇ panes[mq_fi].pane_type == "terminal" {
