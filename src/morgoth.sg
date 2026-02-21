@@ -30,7 +30,8 @@
 ≔ HMR_CHECK_INTERVAL = 30; // Check every ~500ms (30 * 16ms)
 ≔ ESC_BUF_MAX = 4096;      // Max VTerm escape buffer length
 ≔ INPUT_ESC_BUF_MAX = 256;  // Max input escape buffer length
-≔ SELF_PATH = "src/morgoth.sg";
+≔ SELF_PATH_ENV = Sys·getenv("MORGOTH_SRC");
+≔ SELF_PATH = ⎇ SELF_PATH_ENV != null ∧ SELF_PATH_ENV != "" { SELF_PATH_ENV } ⎉ { "src/morgoth.sg" };
 ≔ IDLE_THRESHOLD = 120;    // ~2s at 16ms; ticks of no PTY output before pane is "idle"
 
 // Box-drawing characters (Unicode)
@@ -58,29 +59,62 @@
 // Section 2: Data Structures
 // ============================================================================
 
-// Struct type declarations (interpreter registers named types; duck-typed at call sites)
-Σ Cell { ch, fg, bg, dirty }
-Σ Region { x, y, w, h }
-Σ GridCell { x, y, ch, fg, bg, dirty }
-Σ Grid { cells, rows, cols }
-Σ VTerm { cells, rows, cols, cursor_row, cursor_col, attr_fg, attr_bg, esc_state, esc_buf,
-           scroll_top, scroll_bottom, saved_row, saved_col, scrollback, scrollback_max,
-           scroll_offset, alt_cells, alt_cursor_row, alt_cursor_col, alt_attr_fg, alt_attr_bg,
-           in_alt_screen, cursor_visible, app_cursor_keys, auto_wrap, bracketed_paste,
-           mouse_mode, mouse_sgr, origin_mode, title }
-Σ Pane { id, region, master_fd, slave_fd, pid, alive, title, role, inbox, fifo_path, fifo_fd,
-          vterm, pane_type, last_pty_tick, current_task_id }
-Σ CopyModeState { active, cursor_row, cursor_col, viewport_row, selecting, select_start_row,
-                   select_start_col, line_mode, text_lines, search_active, search_query,
-                   search_matches, search_current, search_saved_row, search_saved_col,
-                   search_saved_viewport }
-Σ InputState { leader_active, mouse_mode, escape_buf, in_escape, last_escape_buf,
-               confirming_close, confirming_quit, showing_help, showing_picker,
-               picker_profiles, picker_selected, active_profile, leader_key, bindings,
-               bcast, showing_tasks, copy_mode }
-Σ Config { leader_key, hmr, shell, max_panes, session_restore, terminal_w, terminal_h, bindings }
-Σ Task { id, text, status, pane_id, created_ts, done_ts }
-Σ MqMessage { sender, recipient, kind, payload, ts }
+// Struct type declarations
+Σ Cell { ch: String, fg: Int, bg: Int, dirty: Bool }
+Σ Region { x: Int, y: Int, w: Int, h: Int }
+Σ GridCell { x: Int, y: Int, ch: String, fg: Int, bg: Int, dirty: Bool }
+Σ Grid { cells: Array, rows: Int, cols: Int }
+Σ VTerm {
+    cells: Array, rows: Int, cols: Int,
+    cursor_row: Int, cursor_col: Int,
+    attr_fg: Int, attr_bg: Int,
+    esc_state: EscapeState, esc_buf: String,
+    scroll_top: Int, scroll_bottom: Int,
+    saved_row: Int, saved_col: Int,
+    scrollback: Array, scrollback_max: Int,
+    scroll_offset: Int,
+    alt_cells: Array,
+    alt_cursor_row: Int, alt_cursor_col: Int,
+    alt_attr_fg: Int, alt_attr_bg: Int,
+    in_alt_screen: Bool, cursor_visible: Bool,
+    app_cursor_keys: Bool, auto_wrap: Bool,
+    bracketed_paste: Bool,
+    mouse_mode: Int, mouse_sgr: Bool,
+    origin_mode: Bool, title: String
+}
+Σ Pane {
+    id: String, region: Region,
+    master_fd: Int, slave_fd: Int, pid: Int, alive: Bool,
+    title: String, role: String,
+    inbox: Array, fifo_path: String, fifo_fd: Int,
+    vterm: VTerm, pane_type: String,
+    last_pty_tick: Int, current_task_id: String
+}
+Σ CopyModeState {
+    active: Bool, cursor_row: Int, cursor_col: Int, viewport_row: Int,
+    selecting: Bool, select_start_row: Int, select_start_col: Int,
+    line_mode: Bool, text_lines: Array,
+    search_active: Bool, search_query: String,
+    search_matches: Array, search_current: Int,
+    search_saved_row: Int, search_saved_col: Int, search_saved_viewport: Int
+}
+Σ InputState {
+    leader_active: Bool, mouse_mode: Int,
+    escape_buf: String, in_escape: Bool, last_escape_buf: String,
+    confirming_close: Bool, confirming_quit: Bool,
+    showing_help: Bool, showing_picker: Bool,
+    picker_profiles: Array, picker_selected: Int,
+    active_profile: String, leader_key: Int,
+    bindings: Map, bcast: Bool,
+    showing_tasks: Bool, copy_mode: CopyModeState
+}
+Σ Config {
+    leader_key: Int, hmr: Bool, shell: String,
+    max_panes: Int, session_restore: Bool,
+    terminal_w: Int, terminal_h: Int, bindings: Map
+}
+Σ Task { id: String, text: String, status: String, pane_id: String, created_ts: String, done_ts: String }
+Σ MqMessage { sender: String, recipient: String, kind: String, payload: String, ts: String }
 
 // Escape state enum for VTerm state machine
 ᛈ EscapeState { Normal, Escape, Csi, Osc, OscEsc, Dcs, DcsEsc, Charset }
@@ -290,15 +324,46 @@ rite setup_mq_socket() {
 rite mq_process_external(panes, sock_fd) {
     ≔ client = Sys·accept(sock_fd, 0, 0);
     ⎇ client < 0 { ↩ null; }
-    ≔ data = Sys·read_string(client, 4096);
-    Sys·close(client);
-    ⎇ data == "" { ↩ null; }
+    ≔ data~ = Sys·read_string(client, 4096);
+    ⎇ data == "" { Sys·close(client); ↩ null; }
     ≔ msg = json_parse(data);
     ⎇ type_of(msg) == "map" {
         ≔ recip   = map_get(msg, "recipient");
         ≔ kind    = map_get(msg, "kind");
         ≔ payload = map_get(msg, "payload");
-        ⎇ recip == "notify" ∨ kind == "notify" {
+        ⎇ kind == "query" {
+            // Synchronous RPC: write JSON response before closing client fd
+            ≔ qwhat = ⎇ payload != null { payload } ⎉ { "panes" };
+            ⎇ qwhat == "panes" {
+                ≔ mut qresp = "[";
+                ≔ mut qpi = 0;
+                ⟳ qpi < len(panes) {
+                    ≔ qp = panes[qpi];
+                    ≔ qentry = json_stringify({
+                        id: qp.id, role: qp.role, title: qp.title,
+                        pane_type: qp.pane_type, alive: qp.alive,
+                        current_task_id: qp.current_task_id, fifo: qp.fifo_path
+                    });
+                    ⎇ qpi > 0 { qresp = qresp + ","; }
+                    qresp = qresp + qentry;
+                    qpi = qpi + 1;
+                }
+                qresp = qresp + "]";
+                Sys·write_string(client, qresp + "\n");
+            } ⎉ { ⎇ qwhat == "tasks" {
+                ≔ qtasks = task_load();
+                Sys·write_string(client, json_stringify(qtasks) + "\n");
+            } ⎉ { ⎇ qwhat == "manifest" {
+                ≔ mpath = env("HOME") + "/.morgoth/manifest.json";
+                ⎇ fs_exists(mpath) == true {
+                    Sys·write_string(client, fs_read(mpath) + "\n");
+                } ⎉ {
+                    Sys·write_string(client, "{}\n");
+                }
+            } ⎉ {
+                Sys·write_string(client, "{\"error\":\"unknown query: " + qwhat + "\"}\n");
+            } } }
+        } ⎉ { ⎇ recip == "notify" ∨ kind == "notify" {
             // Route to pane[0].inbox as notify kind — inbox drain loop handles rendering
             ⎇ len(panes) > 0 ∧ payload != null {
                 push(panes[0].inbox, { kind: "notify", payload: payload });
@@ -335,8 +400,9 @@ rite mq_process_external(panes, sock_fd) {
             ⎇ recip != null ∧ kind != null ∧ payload != null {
                 mq_send(panes, "external", recip, kind, payload);
             }
-        } } }
+        } } } }
     }
+    Sys·close(client);
 }
 
 // Replay messages.jsonl into pane inboxes on startup
@@ -1457,6 +1523,9 @@ rite load_config() {
             ⎇ j_session_restore != null { cfg.session_restore = j_session_restore; }
         }
     }
+
+    // MORGOTH_HMR_OVERRIDE=1 forces HMR on (set by launch.sh --hmr flag)
+    ⎇ Sys·getenv("MORGOTH_HMR_OVERRIDE") == "1" { cfg.hmr = true; }
 
     // Validate shell path
     cfg.shell = validate_shell(cfg.shell);
@@ -2758,7 +2827,7 @@ rite render_help_overlay(grid, region) {
 // Process a single input byte, returns action string
 // Actions: "passthrough", "leader_activate", "focus_next", "focus_prev",
 //          "quit", "none", "mouse:X:Y"
-rite process_input(input_state, byte, pane_count) {
+rite process_input(input_state, byte) {
     // Copy mode intercept — before any other input handling
     ⎇ input_state.copy_mode.active == true {
         ≔ cm = input_state.copy_mode;
@@ -3550,14 +3619,14 @@ rite main() {
 
         // Poll stdin for user input
         ⎇ poll_ready[0] == true {
-            ≔ input_data = Sys·read_string(0, 256);
+            ≔ input_data~ = Sys·read_string(0, 256);
             ⎇ input_data != "" {
                 had_activity = true;
                 // Process each byte
                 ≔ mut bi = 0;
                 ⟳ bi < len(input_data) {
                     ≔ byte = char_code_at(input_data, bi);
-                    ≔ action = process_input(input, byte, len(panes));
+                    ≔ action = process_input(input, byte);
 
                     // Action dispatch
                     ⌥ action {
@@ -4144,7 +4213,7 @@ rite main() {
                 ≔ mut pty_done = false;
                 ⟳ pty_done == false ∧ pty_total < PTY_FRAME_BUDGET {
                     ⎇ Sys·poll_fd(panes[pane_i].master_fd, 0) == true {
-                        ≔ chunk = Sys·read_string(panes[pane_i].master_fd, PTY_READ_CHUNK);
+                        ≔ chunk~ = Sys·read_string(panes[pane_i].master_fd, PTY_READ_CHUNK);
                         ⎇ chunk != "" {
                             panes[pane_i].vterm.feed(chunk);
                             pty_total = pty_total + len(chunk);
@@ -4224,7 +4293,7 @@ rite main() {
             ≔ fifo_poll_idx = 1 + len(pane_fd_map) + fii;
             ⎇ poll_ready[fifo_poll_idx] == true {
                 ≔ fifo_pane_i = fifo_fd_map[fii];
-                ≔ data = Sys·read_string(panes[fifo_pane_i].fifo_fd, 4096);
+                ≔ data~ = Sys·read_string(panes[fifo_pane_i].fifo_fd, 4096);
                 ⎇ data != "" {
                     mq_send(panes, "external", panes[fifo_pane_i].id, "paste", data);
                 }
@@ -4345,7 +4414,17 @@ rite main() {
                     ≔ hmr_current_mtime = fs_mtime(SELF_PATH);
                     ⎇ hmr_current_mtime != hmr_last_mtime ∧ hmr_current_mtime > 0 {
                         hmr_last_mtime = hmr_current_mtime;
-                        Dev·reload(SELF_PATH);
+                        ≔ hmr_result = Dev·reload(SELF_PATH);
+                        ⎇ hmr_result == 0 {
+                            render_status_bar(screen, " HMR: reloaded");
+                            flush_dirty(screen);
+                        } ⎉ { ⎇ hmr_result == -2 {
+                            render_status_bar(screen, " HMR: parse error — check " + SELF_PATH);
+                            flush_dirty(screen);
+                        } ⎉ {
+                            render_status_bar(screen, " HMR: IO error reading " + SELF_PATH);
+                            flush_dirty(screen);
+                        } }
                     }
                 }
             }

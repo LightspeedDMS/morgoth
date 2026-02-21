@@ -1,0 +1,7 @@
+{
+    "sigil.languageServerPath": "${workspaceFolder}/../sigil-lang/parser/target/release/sigil",
+    "[sigil]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true
+    }
+}

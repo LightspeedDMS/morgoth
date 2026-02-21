@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# morgoth-ctl — control plane for a running Morgoth session
+#
+# Usage:
+#   morgoth-ctl status                    Full dump: panes + tasks
+#   morgoth-ctl query <panes|tasks|manifest>  Raw JSON via socket
+#   morgoth-ctl pane-status <id-prefix>   Single pane JSON
+#   morgoth-ctl broadcast <text>          Paste text to all alive claude panes
+#   morgoth-ctl task-wait <id> [timeout]  Poll until task done (default 30s)
+#   morgoth-ctl metrics                   Machine-readable health JSON
+#
+# Dependencies: jq, nc (ncat recommended for Unix socket support)
+#
+# Examples:
+#   morgoth-ctl status
+#   morgoth-ctl query panes | jq '.[].role'
+#   morgoth-ctl pane-status abc12
+#   morgoth-ctl broadcast "Please summarize your work."
+#   morgoth-ctl task-wait abc12345 60
+#   morgoth-ctl metrics
+
+set -euo pipefail
+
+SOCKET="$HOME/.morgoth/morgoth.sock"
+TASKS_FILE="$HOME/.morgoth/tasks.json"
+MANIFEST_FILE="$HOME/.morgoth/manifest.json"
+
+_die()  { echo "error: $*" >&2; exit 1; }
+_warn() { echo "warn: $*" >&2; }
+
+# Send a JSON message to the socket and return response
+_socket_send() {
+    local msg="$1"
+    echo "$msg" | nc -U "$SOCKET"
+}
+
+# Send a query and return the JSON response
+_socket_query() {
+    local what="$1"
+    [[ -S "$SOCKET" ]] || _die "Morgoth socket not found at $SOCKET (is morgoth running?)"
+    _socket_send "$(jq -n --arg p "$what" '{kind: "query", payload: $p}')"
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+
+  status)
+    echo "=== Panes ==="
+    if [[ -S "$SOCKET" ]]; then
+        _socket_query panes | jq -r '.[] | "\(.id[0:8])  [\(.role)]  alive=\(.alive)  task=\(.current_task_id // "-")  \(.title)"'
+    elif [[ -f "$MANIFEST_FILE" ]]; then
+        jq -r '.[] | "\(.id[0:8])  [\(.role)]  \(.title)"' "$MANIFEST_FILE"
+    else
+        echo "(morgoth not running and no manifest found)"
+    fi
+    echo ""
+    echo "=== Tasks ==="
+    if [[ -S "$SOCKET" ]]; then
+        _socket_query tasks | jq -r '.[] | select(.status != "done") | "\(.id[0:8])  [\(.status)]  \(.text)"'
+    elif [[ -f "$TASKS_FILE" ]]; then
+        jq -r '.[] | select(.status != "done") | "\(.id[0:8])  [\(.status)]  \(.text)"' "$TASKS_FILE"
+    else
+        echo "(no tasks)"
+    fi
+    ;;
+
+  query)
+    WHAT="${1:-panes}"
+    _socket_query "$WHAT"
+    ;;
+
+  pane-status)
+    [[ $# -eq 0 ]] && _die "Usage: morgoth-ctl pane-status ID-PREFIX"
+    PREFIX="$1"
+    PANES=$(_socket_query panes)
+    MATCH=$(echo "$PANES" | jq --arg p "$PREFIX" '[.[] | select(.id | startswith($p))]')
+    COUNT=$(echo "$MATCH" | jq 'length')
+    [[ "$COUNT" -eq 0 ]] && _die "No pane found with prefix '$PREFIX'"
+    [[ "$COUNT" -gt 1 ]] && _warn "Multiple panes match prefix '$PREFIX', showing all"
+    echo "$MATCH" | jq '.'
+    ;;
+
+  broadcast)
+    [[ $# -eq 0 ]] && _die "Usage: morgoth-ctl broadcast TEXT"
+    TEXT="$*"
+    [[ -S "$SOCKET" ]] || _die "Morgoth socket not found at $SOCKET"
+    MSG=$(jq -n --arg p "$TEXT" '{kind: "broadcast", payload: $p}')
+    _socket_send "$MSG"
+    echo "Broadcast sent to claude panes."
+    ;;
+
+  task-wait)
+    [[ $# -eq 0 ]] && _die "Usage: morgoth-ctl task-wait ID-PREFIX [timeout_secs]"
+    PREFIX="$1"
+    TIMEOUT="${2:-30}"
+    DEADLINE=$(( $(date +%s) + TIMEOUT ))
+    echo -n "Waiting for task $PREFIX to complete"
+    while true; do
+        NOW=$(date +%s)
+        if [[ "$NOW" -ge "$DEADLINE" ]]; then
+            echo ""
+            echo "Timeout: task '$PREFIX' did not complete within ${TIMEOUT}s" >&2
+            exit 1
+        fi
+        if [[ -S "$SOCKET" ]]; then
+            TASKS=$(_socket_query tasks 2>/dev/null)
+        elif [[ -f "$TASKS_FILE" ]]; then
+            TASKS=$(cat "$TASKS_FILE")
+        else
+            TASKS="[]"
+        fi
+        STATUS=$(echo "$TASKS" | jq -r --arg p "$PREFIX" \
+            '.[] | select(.id | startswith($p)) | .status' | head -1)
+        if [[ "$STATUS" == "done" ]]; then
+            echo " done."
+            exit 0
+        fi
+        echo -n "."
+        sleep 0.5
+    done
+    ;;
+
+  metrics)
+    if [[ -S "$SOCKET" ]]; then
+        PANES=$(_socket_query panes)
+        TASKS=$(_socket_query tasks)
+    else
+        PANES=$(jq '.' "$MANIFEST_FILE" 2>/dev/null || echo "[]")
+        TASKS=$(jq '.' "$TASKS_FILE" 2>/dev/null || echo "[]")
+    fi
+    jq -n \
+        --argjson panes "$PANES" \
+        --argjson tasks "$TASKS" \
+        '{
+            pane_count:     ($panes | length),
+            alive_count:    ($panes | map(select(.alive == true)) | length),
+            claude_count:   ($panes | map(select(.role == "claude")) | length),
+            tasks_pending:  ($tasks | map(select(.status == "pending")) | length),
+            tasks_active:   ($tasks | map(select(.status == "dispatched")) | length),
+            tasks_done:     ($tasks | map(select(.status == "done")) | length),
+            socket_live:    true
+        }'
+    ;;
+
+  -h|--help|help|"")
+    head -25 "$0" | grep '^#' | sed 's/^# *//'
+    exit 0
+    ;;
+
+  *)
+    _die "Unknown subcommand '$cmd'. Use: status, query, pane-status, broadcast, task-wait, metrics"
+    ;;
+
+esac

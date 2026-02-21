@@ -17,6 +17,12 @@ if [ ! -f "$MORGOTH_SRC" ]; then
     exit 1
 fi
 
+# --hmr flag enables hot-module-reload (watches morgoth.sg for changes)
+[[ " $* " == *" --hmr "* ]] && export MORGOTH_HMR_OVERRIDE=1
+
+# Propagate source path so morgoth can resolve it regardless of cwd
+export MORGOTH_SRC="$MORGOTH_SRC"
+
 # Environment for child shells
 export MORGOTH=1
 export TERM=xterm-256color

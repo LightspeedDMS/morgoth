@@ -1,0 +1,25 @@
+[lint]
+# morgoth is interpreter-mode Sigil; these rules are suppressed as intentional:
+suggest_unicode = false     # already uses unicode syntax throughout
+check_naming = false        # naming follows Sigil interpreter conventions
+
+[lint.levels]
+# W0207: '== true' / '== false' comparisons are intentional for clarity
+# in state machine conditions throughout the event loop
+bool_comparison = "allow"
+
+# W0212: cyclomatic complexity — inherent in a TUI event loop with a
+# main() that handles all pane/input/render state, process_input with
+# full vim-style copy mode, and VTerm with full ANSI/CSI processing
+high_complexity = "allow"
+
+# W0205: nesting depth — inherent in the VTerm parser and copy mode
+# state machine; branches are logically necessary
+deep_nesting = "allow"
+
+# W0216: main() line count — the event loop is intentionally kept in
+# one function for locality of state (panes, screen, focus, etc.)
+long_function = "allow"
+
+# W0206: empty match arms ('_ => {}') are intentional catch-alls
+empty_block = "allow"
