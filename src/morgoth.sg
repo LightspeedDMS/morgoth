@@ -31,6 +31,7 @@
 ≔ ESC_BUF_MAX = 4096;      // Max VTerm escape buffer length
 ≔ INPUT_ESC_BUF_MAX = 256;  // Max input escape buffer length
 ≔ SELF_PATH = "src/morgoth.sg";
+≔ IDLE_THRESHOLD = 120;    // ~2s at 16ms; ticks of no PTY output before pane is "idle"
 
 // Box-drawing characters (Unicode)
 ≔ BOX_H  = "─";
@@ -57,26 +58,57 @@
 // Section 2: Data Structures
 // ============================================================================
 
+// Struct type declarations (interpreter registers named types; duck-typed at call sites)
+Σ Cell { ch, fg, bg, dirty }
+Σ Region { x, y, w, h }
+Σ GridCell { x, y, ch, fg, bg, dirty }
+Σ Grid { cells, rows, cols }
+Σ VTerm { cells, rows, cols, cursor_row, cursor_col, attr_fg, attr_bg, esc_state, esc_buf,
+           scroll_top, scroll_bottom, saved_row, saved_col, scrollback, scrollback_max,
+           scroll_offset, alt_cells, alt_cursor_row, alt_cursor_col, alt_attr_fg, alt_attr_bg,
+           in_alt_screen, cursor_visible, app_cursor_keys, auto_wrap, bracketed_paste,
+           mouse_mode, mouse_sgr, origin_mode, title }
+Σ Pane { id, region, master_fd, slave_fd, pid, alive, title, role, inbox, fifo_path, fifo_fd,
+          vterm, pane_type, last_pty_tick, current_task_id }
+Σ CopyModeState { active, cursor_row, cursor_col, viewport_row, selecting, select_start_row,
+                   select_start_col, line_mode, text_lines, search_active, search_query,
+                   search_matches, search_current, search_saved_row, search_saved_col,
+                   search_saved_viewport }
+Σ InputState { leader_active, mouse_mode, escape_buf, in_escape, last_escape_buf,
+               confirming_close, confirming_quit, showing_help, showing_picker,
+               picker_profiles, picker_selected, active_profile, leader_key, bindings,
+               bcast, showing_tasks, copy_mode }
+Σ Config { leader_key, hmr, shell, max_panes, session_restore, terminal_w, terminal_h, bindings }
+Σ Task { id, text, status, pane_id, created_ts, done_ts }
+Σ MqMessage { sender, recipient, kind, payload, ts }
+
+// Escape state enum for VTerm state machine
+ᛈ EscapeState { Normal, Escape, Csi, Osc, OscEsc, Dcs, DcsEsc, Charset }
+
 // A Cell in the screen buffer
-rite Cell·new(ch, fg, bg, dirty) {
-    ≔ cell = {
-        ch: ch,
-        fg: fg,
-        bg: bg,
-        dirty: dirty
-    };
-    ↩ cell
+⊢ Cell {
+    rite new(ch, fg, bg, dirty) {
+        ≔ cell = Cell {
+            ch: ch,
+            fg: fg,
+            bg: bg,
+            dirty: dirty
+        };
+        ↩ cell
+    }
 }
 
 // A rectangular region on screen
-rite Region·new(x, y, w, h) {
-    ≔ r = {
-        x: x,
-        y: y,
-        w: w,
-        h: h
-    };
-    ↩ r
+⊢ Region {
+    rite new(x, y, w, h) {
+        ≔ r = Region {
+            x: x,
+            y: y,
+            w: w,
+            h: h
+        };
+        ↩ r
+    }
 }
 
 // A Pane: owns a PTY, a shell process, and a screen region
@@ -92,7 +124,7 @@ rite Pane·new(region, shell) {
     // VTerm interior dimensions (region minus border)
     ≔ vt = VTerm·new(region.h - 2, region.w - 2);
 
-    ≔ pane = {
+    ≔ pane = Pane {
         id: uuid_v4(),
         region: region,
         master_fd: pty.master_fd,
@@ -105,7 +137,9 @@ rite Pane·new(region, shell) {
         fifo_path: "",
         fifo_fd: -1,
         vterm: vt,
-        pane_type: "terminal"
+        pane_type: "terminal",
+        last_pty_tick: 0,
+        current_task_id: null
     };
     ↩ pane
 }
@@ -114,7 +148,7 @@ rite Pane·new(region, shell) {
 rite MonitorPane·new(region) {
     ≔ vt = VTerm·new(region.h - 2, region.w - 2);
 
-    ≔ pane = {
+    ≔ pane = Pane {
         id: uuid_v4(),
         region: region,
         master_fd: -1,
@@ -127,7 +161,9 @@ rite MonitorPane·new(region) {
         fifo_path: "",
         fifo_fd: -1,
         vterm: vt,
-        pane_type: "monitor"
+        pane_type: "monitor",
+        last_pty_tick: -1,
+        current_task_id: null
     };
     ↩ pane
 }
@@ -145,8 +181,8 @@ rite detect_role(title) {
 // Construct a message object
 // Note: "from"/"to" are reserved in Sigil — use "sender"/"recipient"
 rite mq_message(from_id, to_id, kind, payload) {
-    { sender: from_id, recipient: to_id, kind: kind, payload: payload,
-      ts: to_string(Sys·clock_gettime()) }
+    MqMessage { sender: from_id, recipient: to_id, kind: kind, payload: payload,
+                ts: to_string(Sys·clock_gettime()) }
 }
 
 // Deliver a message to a pane's inbox (and persist it)
@@ -267,11 +303,39 @@ rite mq_process_external(panes, sock_fd) {
             ⎇ len(panes) > 0 ∧ payload != null {
                 push(panes[0].inbox, { kind: "notify", payload: payload });
             }
+        } ⎉ { ⎇ kind == "task_add" ∧ payload != null {
+            ≔ new_task = task_new(payload);
+            ≔ mut atq = task_load();
+            push(atq, new_task);
+            task_save(atq);
+            ⎇ len(panes) > 0 {
+                push(panes[0].inbox, { kind: "notify", payload: "Task added: " + substring(payload, 0, 40) });
+            }
+        } ⎉ { ⎇ kind == "task_done" ∧ payload != null {
+            ≔ mut dtq = task_load();
+            ≔ mut tdni = 0;
+            ⟳ tdni < len(dtq) {
+                ⎇ map_get(dtq[tdni], "id") == payload {
+                    ≔ tn_txt = map_get(dtq[tdni], "text");
+                    ≔ tn_pid = map_get(dtq[tdni], "pane_id");
+                    ≔ tn_cts = map_get(dtq[tdni], "created_ts");
+                    dtq[tdni] = { id: payload, text: tn_txt,
+                                  status: "done", pane_id: tn_pid,
+                                  created_ts: tn_cts,
+                                  done_ts: to_string(Sys·clock_gettime()) };
+                }
+                tdni = tdni + 1;
+            }
+            task_save(dtq);
+            // Route pane clearing through inbox (main scope owns panes array)
+            ⎇ len(panes) > 0 {
+                push(panes[0].inbox, { kind: "task_done_internal", payload: payload });
+            }
         } ⎉ {
             ⎇ recip != null ∧ kind != null ∧ payload != null {
                 mq_send(panes, "external", recip, kind, payload);
             }
-        }
+        } } }
     }
 }
 
@@ -313,11 +377,49 @@ rite mq_load_pending(panes) {
 }
 
 // ============================================================================
+// Section 2e: Task Queue — Shared Agent Work Queue
+// ============================================================================
+
+rite task_queue_path() { env("HOME") + "/.morgoth/tasks.json" }
+
+rite task_new(text) {
+    Task { id: uuid_v4(), text: text, status: "pending",
+           pane_id: null, created_ts: to_string(Sys·clock_gettime()), done_ts: null }
+}
+
+rite task_load() {
+    ≔ path = task_queue_path();
+    ⎇ fs_exists(path) == false { ↩ []; }
+    ≔ raw = fs_read(path);
+    ⎇ len(raw) == 0 ∨ starts_with(raw, "[") == false { ↩ []; }
+    ≔ parsed = json_parse(raw);
+    ⎇ type_of(parsed) != "array" ∧ type_of(parsed) != "list" { ↩ []; }
+    ↩ parsed
+}
+
+rite task_save(tasks) { fs_write(task_queue_path(), json_stringify(tasks)); }
+
+rite task_find_pending(tasks) {
+    ≔ mut i = 0;
+    ⟳ i < len(tasks) {
+        ⎇ map_get(tasks[i], "status") == "pending" { ↩ tasks[i]; }
+        i = i + 1;
+    }
+    ↩ null
+}
+
+// NOTE: task_mark_dispatched/task_mark_done cannot be helper functions because
+// array slot assignment (tasks[i] = {...}) does NOT propagate through function
+// call boundaries in Sigil. These updates must be inlined at each call site
+// where the tasks array is declared in the same scope.
+
+// ============================================================================
 // Section 2c: VTerm — Virtual Terminal Emulator
 // ============================================================================
 
+⊢ VTerm {
 // Create a new VTerm with given interior dimensions
-rite VTerm·new(rows, cols) {
+rite new(rows, cols) {
     ≔ total = rows * cols;
     ≔ mut cells = [];
     ≔ mut i = 0;
@@ -325,7 +427,7 @@ rite VTerm·new(rows, cols) {
         push(cells, {ch: " ", fg: 7, bg: 0});
         i = i + 1;
     }
-    ≔ vt = {
+    ≔ vt = VTerm {
         cells: cells,
         rows: rows,
         cols: cols,
@@ -333,7 +435,7 @@ rite VTerm·new(rows, cols) {
         cursor_col: 0,
         attr_fg: 7,
         attr_bg: 0,
-        esc_state: "normal",
+        esc_state: EscapeState·Normal,
         esc_buf: "",
         scroll_top: 0,
         scroll_bottom: rows - 1,
@@ -361,78 +463,78 @@ rite VTerm·new(rows, cols) {
 }
 
 // Scroll the VTerm up by one line (evict top line of scroll region)
-rite vterm_scroll_up(vt) {
+rite scroll_up(self) {
     // Save evicted line to scrollback (only in main screen)
-    ⎇ vt.in_alt_screen == false {
+    ⎇ self.in_alt_screen == false {
         ≔ mut evicted = [];
         ≔ mut ec = 0;
-        ⟳ ec < vt.cols {
-            ≔ idx = vt.scroll_top * vt.cols + ec;
-            push(evicted, vt.cells[idx]);
+        ⟳ ec < self.cols {
+            ≔ idx = self.scroll_top * self.cols + ec;
+            push(evicted, self.cells[idx]);
             ec = ec + 1;
         }
-        push(vt.scrollback, evicted);
+        push(self.scrollback, evicted);
         // Trim scrollback if over max
-        ⎇ len(vt.scrollback) > vt.scrollback_max {
+        ⎇ len(self.scrollback) > self.scrollback_max {
             // Remove oldest by rebuilding (drop first element)
             ≔ mut trimmed = [];
             ≔ mut ti = 1;
-            ⟳ ti < len(vt.scrollback) {
-                push(trimmed, vt.scrollback[ti]);
+            ⟳ ti < len(self.scrollback) {
+                push(trimmed, self.scrollback[ti]);
                 ti = ti + 1;
             }
-            vt.scrollback = trimmed;
+            self.scrollback = trimmed;
         }
     }
 
     // Shift lines up within scroll region
-    ≔ mut row = vt.scroll_top;
-    ⟳ row < vt.scroll_bottom {
+    ≔ mut row = self.scroll_top;
+    ⟳ row < self.scroll_bottom {
         ≔ mut col = 0;
-        ⟳ col < vt.cols {
-            ≔ dst = row * vt.cols + col;
-            ≔ src = (row + 1) * vt.cols + col;
-            vt.cells[dst] = vt.cells[src];
+        ⟳ col < self.cols {
+            ≔ dst = row * self.cols + col;
+            ≔ src = (row + 1) * self.cols + col;
+            self.cells[dst] = self.cells[src];
             col = col + 1;
         }
         row = row + 1;
     }
     // Clear the bottom line of scroll region
     ≔ mut col = 0;
-    ⟳ col < vt.cols {
-        ≔ idx = vt.scroll_bottom * vt.cols + col;
-        vt.cells[idx] = {ch: " ", fg: 7, bg: 0};
+    ⟳ col < self.cols {
+        ≔ idx = self.scroll_bottom * self.cols + col;
+        self.cells[idx] = {ch: " ", fg: 7, bg: 0};
         col = col + 1;
     }
 }
 
 // Resize the VTerm grid in-place, preserving scrollback
-rite vterm_resize(vt, new_rows, new_cols) {
-    ≔ old_rows = vt.rows;
-    ≔ old_cols = vt.cols;
+    rite resize(self, new_rows, new_cols) {
+    ≔ old_rows = self.rows;
+    ≔ old_cols = self.cols;
 
     // 1. Push overflow rows to scrollback (shrink only, main screen only)
-    ⎇ new_rows < old_rows ∧ vt.in_alt_screen == false {
+    ⎇ new_rows < old_rows ∧ self.in_alt_screen == false {
         ≔ overflow = old_rows - new_rows;
         ≔ mut i = 0;
         ⟳ i < overflow {
             ≔ mut row_cells = [];
             ≔ mut c = 0;
             ⟳ c < old_cols {
-                push(row_cells, vt.cells[i * old_cols + c]);
+                push(row_cells, self.cells[i * old_cols + c]);
                 c = c + 1;
             }
-            push(vt.scrollback, row_cells);
+            push(self.scrollback, row_cells);
             i = i + 1;
         }
-        ⟳ len(vt.scrollback) > vt.scrollback_max {
+        ⟳ len(self.scrollback) > self.scrollback_max {
             ≔ mut trimmed = [];
             ≔ mut ti = 1;
-            ⟳ ti < len(vt.scrollback) {
-                push(trimmed, vt.scrollback[ti]);
+            ⟳ ti < len(self.scrollback) {
+                push(trimmed, self.scrollback[ti]);
                 ti = ti + 1;
             }
-            vt.scrollback = trimmed;
+            self.scrollback = trimmed;
         }
     }
 
@@ -444,7 +546,7 @@ rite vterm_resize(vt, new_rows, new_cols) {
         ≔ mut c = 0;
         ⟳ c < new_cols {
             ⎇ old_r >= 0 ∧ old_r < old_rows ∧ c < old_cols {
-                push(new_cells, vt.cells[old_r * old_cols + c]);
+                push(new_cells, self.cells[old_r * old_cols + c]);
             } ⎉ {
                 push(new_cells, {ch: " ", fg: 7, bg: 0});
             }
@@ -454,62 +556,64 @@ rite vterm_resize(vt, new_rows, new_cols) {
     }
 
     // 3. Update state
-    vt.cells = new_cells;
-    vt.rows = new_rows;
-    vt.cols = new_cols;
-    vt.scroll_top = 0;
-    vt.scroll_bottom = new_rows - 1;
-    vt.scroll_offset = 0;
+    self.cells = new_cells;
+    self.rows = new_rows;
+    self.cols = new_cols;
+    self.scroll_top = 0;
+    self.scroll_bottom = new_rows - 1;
+    self.scroll_offset = 0;
 
     // 4. Clamp cursor
-    ⎇ vt.cursor_row >= new_rows { vt.cursor_row = new_rows - 1; }
-    ⎇ vt.cursor_col >= new_cols { vt.cursor_col = new_cols - 1; }
+    ⎇ self.cursor_row >= new_rows { self.cursor_row = new_rows - 1; }
+    ⎇ self.cursor_col >= new_cols { self.cursor_col = new_cols - 1; }
 
     // 5. Discard alt screen (rebuilt on next enter)
-    vt.alt_cells = [];
+    self.alt_cells = [];
 }
 
 // Write a printable character at the cursor position
 // ch should be a string (use to_string(char_at(...)) when feeding)
-rite vterm_put_char(vt, ch) {
+rite put_char(self, ch) {
     // Fullwidth char at last column: wrap early (can't split across lines)
-    ⎇ is_fullwidth(ch) == true ∧ vt.cursor_col == vt.cols - 1 ∧ vt.auto_wrap == true {
-        vt.cursor_col = vt.cols;
+    ⎇ is_fullwidth(ch) == true ∧ self.cursor_col == self.cols - 1 ∧ self.auto_wrap == true {
+        self.cursor_col = self.cols;
     }
     // Handle line wrap (respects auto_wrap flag)
-    ⎇ vt.cursor_col >= vt.cols {
-        ⎇ vt.auto_wrap == true {
-            vt.cursor_col = 0;
-            vt.cursor_row = vt.cursor_row + 1;
-            ⎇ vt.cursor_row > vt.scroll_bottom {
-                vterm_scroll_up(vt);
-                vt.cursor_row = vt.scroll_bottom;
+    ⎇ self.cursor_col >= self.cols {
+        ⎇ self.auto_wrap == true {
+            self.cursor_col = 0;
+            self.cursor_row = self.cursor_row + 1;
+            ⎇ self.cursor_row > self.scroll_bottom {
+                self.scroll_up();
+                self.cursor_row = self.scroll_bottom;
             }
         } ⎉ {
             // No wrap: stay at last column
-            vt.cursor_col = vt.cols - 1;
+            self.cursor_col = self.cols - 1;
         }
     }
 
-    ≔ idx = vt.cursor_row * vt.cols + vt.cursor_col;
-    ⎇ idx >= 0 ∧ idx < len(vt.cells) {
-        vt.cells[idx] = {ch: ch, fg: vt.attr_fg, bg: vt.attr_bg};
+    ≔ idx = self.cursor_row * self.cols + self.cursor_col;
+    ⎇ idx >= 0 ∧ idx < len(self.cells) {
+        self.cells[idx] = {ch: ch, fg: self.attr_fg, bg: self.attr_bg};
     }
     // Fullwidth characters occupy 2 columns
     ⎇ is_fullwidth(ch) == true {
-        ⎇ vt.cursor_col + 1 < vt.cols {
-            ≔ idx2 = vt.cursor_row * vt.cols + vt.cursor_col + 1;
-            ⎇ idx2 >= 0 ∧ idx2 < len(vt.cells) {
-                vt.cells[idx2] = {ch: "", fg: vt.attr_fg, bg: vt.attr_bg};
+        ⎇ self.cursor_col + 1 < self.cols {
+            ≔ idx2 = self.cursor_row * self.cols + self.cursor_col + 1;
+            ⎇ idx2 >= 0 ∧ idx2 < len(self.cells) {
+                self.cells[idx2] = {ch: "", fg: self.attr_fg, bg: self.attr_bg};
             }
         }
-        vt.cursor_col = vt.cursor_col + 2;
+        self.cursor_col = self.cursor_col + 2;
     } ⎉ {
-        vt.cursor_col = vt.cursor_col + 1;
+        self.cursor_col = self.cursor_col + 1;
     }
 }
 
-// Parse CSI parameters string into array of ints
+} // end ⊢ VTerm (part 1)
+
+// Parse CSI parameters string into array of ints (standalone utility)
 rite vterm_parse_params(buf) {
     ≔ mut params = [];
     ⎇ buf != "" {
@@ -527,13 +631,14 @@ rite vterm_parse_params(buf) {
     params
 }
 
+⊢ VTerm {
 // Dispatch a CSI command
-rite vterm_csi_dispatch(vt, cmd, buf) {
+rite csi_dispatch(self, cmd, buf) {
     // DEC private mode: CSI ? prefix
     ≔ mut dec_handled = false;
     ⎇ len(buf) > 0 ∧ starts_with(buf, "?") == true {
         ≔ stripped = substring(buf, 1, len(buf));
-        vterm_dec_private_dispatch(vt, cmd, stripped);
+        self.dec_private_dispatch(cmd, stripped);
         dec_handled = true;
     }
 
@@ -550,524 +655,508 @@ rite vterm_csi_dispatch(vt, cmd, buf) {
         n = params[0];
     }
 
-    // SGR - Set Graphics Rendition
-    ⎇ cmd == "m" {
-        ⎇ len(params) == 0 {
-            // CSI m = reset
-            vt.attr_fg = 7;
-            vt.attr_bg = 0;
-        } ⎉ {
-            ≔ mut pi = 0;
-            ⟳ pi < len(params) {
-                ≔ p = params[pi];
-                ⎇ p == 0 {
-                    vt.attr_fg = 7;
-                    vt.attr_bg = 0;
-                }
-                ⎇ p == 1 {
-                    // Bold — brighten fg by adding 8
-                    ⎇ vt.attr_fg < 8 {
-                        vt.attr_fg = vt.attr_fg + 8;
+    ⌥ cmd {
+        "m" => {
+            // SGR - Set Graphics Rendition
+            ⎇ len(params) == 0 {
+                // CSI m = reset
+                self.attr_fg = 7;
+                self.attr_bg = 0;
+            } ⎉ {
+                ≔ mut pi = 0;
+                ⟳ pi < len(params) {
+                    ≔ p = params[pi];
+                    ⎇ p == 0 {
+                        self.attr_fg = 7;
+                        self.attr_bg = 0;
                     }
+                    ⎇ p == 1 {
+                        // Bold — brighten fg by adding 8
+                        ⎇ self.attr_fg < 8 {
+                            self.attr_fg = self.attr_fg + 8;
+                        }
+                    }
+                    // Italic (3) and underline (4) — accept silently
+                    ⎇ p == 3 ∨ p == 4 {
+                        // Visual attributes not tracked separately
+                    }
+                    // Inverse video (7) — swap fg/bg
+                    ⎇ p == 7 {
+                        ≔ tmp_fg = self.attr_fg;
+                        self.attr_fg = self.attr_bg;
+                        self.attr_bg = tmp_fg;
+                    }
+                    // Reverse inverse (27) — swap back
+                    ⎇ p == 27 {
+                        ≔ tmp_fg = self.attr_fg;
+                        self.attr_fg = self.attr_bg;
+                        self.attr_bg = tmp_fg;
+                    }
+                    // Standard foreground: 30-37
+                    ⎇ p >= 30 ∧ p <= 37 {
+                        self.attr_fg = p - 30;
+                    }
+                    // Default foreground (39)
+                    ⎇ p == 39 {
+                        self.attr_fg = 7;
+                    }
+                    // Standard background: 40-47
+                    ⎇ p >= 40 ∧ p <= 47 {
+                        self.attr_bg = p - 40;
+                    }
+                    // Default background (49)
+                    ⎇ p == 49 {
+                        self.attr_bg = 0;
+                    }
+                    // 256-color foreground: 38;5;N
+                    ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 5 ∧ pi + 2 < len(params) {
+                        self.attr_fg = params[pi + 2];
+                        pi = pi + 2;
+                    }
+                    // 256-color background: 48;5;N
+                    ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 5 ∧ pi + 2 < len(params) {
+                        self.attr_bg = params[pi + 2];
+                        pi = pi + 2;
+                    }
+                    // True color foreground: 38;2;R;G;B (packed int: 256 + R*65536 + G*256 + B)
+                    ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
+                        self.attr_fg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
+                        pi = pi + 4;
+                    }
+                    // True color background: 48;2;R;G;B (packed int: 256 + R*65536 + G*256 + B)
+                    ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
+                        self.attr_bg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
+                        pi = pi + 4;
+                    }
+                    // Bright foreground: 90-97
+                    ⎇ p >= 90 ∧ p <= 97 {
+                        self.attr_fg = p - 90 + 8;
+                    }
+                    // Bright background: 100-107
+                    ⎇ p >= 100 ∧ p <= 107 {
+                        self.attr_bg = p - 100 + 8;
+                    }
+                    pi = pi + 1;
                 }
-                // Italic (3) and underline (4) — accept silently
-                ⎇ p == 3 ∨ p == 4 {
-                    // Visual attributes not tracked separately
-                }
-                // Inverse video (7) — swap fg/bg
-                ⎇ p == 7 {
-                    ≔ tmp_fg = vt.attr_fg;
-                    vt.attr_fg = vt.attr_bg;
-                    vt.attr_bg = tmp_fg;
-                }
-                // Reverse inverse (27) — swap back
-                ⎇ p == 27 {
-                    ≔ tmp_fg = vt.attr_fg;
-                    vt.attr_fg = vt.attr_bg;
-                    vt.attr_bg = tmp_fg;
-                }
-                // Standard foreground: 30-37
-                ⎇ p >= 30 ∧ p <= 37 {
-                    vt.attr_fg = p - 30;
-                }
-                // Default foreground (39)
-                ⎇ p == 39 {
-                    vt.attr_fg = 7;
-                }
-                // Standard background: 40-47
-                ⎇ p >= 40 ∧ p <= 47 {
-                    vt.attr_bg = p - 40;
-                }
-                // Default background (49)
-                ⎇ p == 49 {
-                    vt.attr_bg = 0;
-                }
-                // 256-color foreground: 38;5;N
-                ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 5 ∧ pi + 2 < len(params) {
-                    vt.attr_fg = params[pi + 2];
-                    pi = pi + 2;
-                }
-                // 256-color background: 48;5;N
-                ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 5 ∧ pi + 2 < len(params) {
-                    vt.attr_bg = params[pi + 2];
-                    pi = pi + 2;
-                }
-                // True color foreground: 38;2;R;G;B (packed int: 256 + R*65536 + G*256 + B)
-                ⎇ p == 38 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
-                    vt.attr_fg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
-                    pi = pi + 4;
-                }
-                // True color background: 48;2;R;G;B (packed int: 256 + R*65536 + G*256 + B)
-                ⎇ p == 48 ∧ pi + 1 < len(params) ∧ params[pi + 1] == 2 ∧ pi + 4 < len(params) {
-                    vt.attr_bg = 256 + params[pi + 2] * 65536 + params[pi + 3] * 256 + params[pi + 4];
-                    pi = pi + 4;
-                }
-                // Bright foreground: 90-97
-                ⎇ p >= 90 ∧ p <= 97 {
-                    vt.attr_fg = p - 90 + 8;
-                }
-                // Bright background: 100-107
-                ⎇ p >= 100 ∧ p <= 107 {
-                    vt.attr_bg = p - 100 + 8;
-                }
-                pi = pi + 1;
             }
         }
-    }
-
-    // CUP - Cursor Position: CSI row;col H
-    ⎇ cmd == "H" ∨ cmd == "f" {
-        ≔ mut row = 1;
-        ≔ mut col = 1;
-        ⎇ len(params) >= 1 ∧ params[0] > 0 {
-            row = params[0];
+        "H" | "f" => {
+            // CUP - Cursor Position: CSI row;col H
+            ≔ mut row = 1;
+            ≔ mut col = 1;
+            ⎇ len(params) >= 1 ∧ params[0] > 0 {
+                row = params[0];
+            }
+            ⎇ len(params) >= 2 ∧ params[1] > 0 {
+                col = params[1];
+            }
+            self.cursor_row = row - 1;
+            self.cursor_col = col - 1;
+            // Clamp
+            ⎇ self.cursor_row >= self.rows {
+                self.cursor_row = self.rows - 1;
+            }
+            ⎇ self.cursor_col >= self.cols {
+                self.cursor_col = self.cols - 1;
+            }
         }
-        ⎇ len(params) >= 2 ∧ params[1] > 0 {
-            col = params[1];
-        }
-        vt.cursor_row = row - 1;
-        vt.cursor_col = col - 1;
-        // Clamp
-        ⎇ vt.cursor_row >= vt.rows {
-            vt.cursor_row = vt.rows - 1;
-        }
-        ⎇ vt.cursor_col >= vt.cols {
-            vt.cursor_col = vt.cols - 1;
-        }
-    }
-
-    // ED - Erase Display: CSI n J
-    ⎇ cmd == "J" {
-        ⎇ n == 0 {
-            // Erase from cursor to end
-            ≔ mut r = vt.cursor_row;
-            ⟳ r < vt.rows {
-                ≔ mut c_start = 0;
-                ⎇ r == vt.cursor_row {
-                    c_start = vt.cursor_col;
+        "J" => {
+            // ED - Erase Display: CSI n J
+            ⎇ n == 0 {
+                // Erase from cursor to end
+                ≔ mut r = self.cursor_row;
+                ⟳ r < self.rows {
+                    ≔ mut c_start = 0;
+                    ⎇ r == self.cursor_row {
+                        c_start = self.cursor_col;
+                    }
+                    ≔ mut c = c_start;
+                    ⟳ c < self.cols {
+                        self.cells[r * self.cols + c] = {ch: " ", fg: 7, bg: 0};
+                        c = c + 1;
+                    }
+                    r = r + 1;
                 }
-                ≔ mut c = c_start;
-                ⟳ c < vt.cols {
-                    vt.cells[r * vt.cols + c] = {ch: " ", fg: 7, bg: 0};
+            }
+            ⎇ n == 1 {
+                // Erase from start to cursor
+                ≔ mut r = 0;
+                ⟳ r <= self.cursor_row {
+                    ≔ mut c_end = self.cols;
+                    ⎇ r == self.cursor_row {
+                        c_end = self.cursor_col + 1;
+                    }
+                    ≔ mut c = 0;
+                    ⟳ c < c_end {
+                        self.cells[r * self.cols + c] = {ch: " ", fg: 7, bg: 0};
+                        c = c + 1;
+                    }
+                    r = r + 1;
+                }
+            }
+            ⎇ n == 2 ∨ n == 3 {
+                // Erase all
+                ≔ mut ei = 0;
+                ⟳ ei < len(self.cells) {
+                    self.cells[ei] = {ch: " ", fg: 7, bg: 0};
+                    ei = ei + 1;
+                }
+            }
+        }
+        "K" => {
+            // EL - Erase Line: CSI n K
+            ≔ row_start = self.cursor_row * self.cols;
+            ⎇ n == 0 {
+                // Erase from cursor to end of line
+                ≔ mut c = self.cursor_col;
+                ⟳ c < self.cols {
+                    self.cells[row_start + c] = {ch: " ", fg: 7, bg: 0};
                     c = c + 1;
                 }
-                r = r + 1;
             }
-        }
-        ⎇ n == 1 {
-            // Erase from start to cursor
-            ≔ mut r = 0;
-            ⟳ r <= vt.cursor_row {
-                ≔ mut c_end = vt.cols;
-                ⎇ r == vt.cursor_row {
-                    c_end = vt.cursor_col + 1;
-                }
+            ⎇ n == 1 {
+                // Erase from start of line to cursor
                 ≔ mut c = 0;
-                ⟳ c < c_end {
-                    vt.cells[r * vt.cols + c] = {ch: " ", fg: 7, bg: 0};
+                ⟳ c <= self.cursor_col {
+                    self.cells[row_start + c] = {ch: " ", fg: 7, bg: 0};
                     c = c + 1;
                 }
-                r = r + 1;
+            }
+            ⎇ n == 2 {
+                // Erase entire line
+                ≔ mut c = 0;
+                ⟳ c < self.cols {
+                    self.cells[row_start + c] = {ch: " ", fg: 7, bg: 0};
+                    c = c + 1;
+                }
             }
         }
-        ⎇ n == 2 ∨ n == 3 {
-            // Erase all
-            ≔ mut ei = 0;
-            ⟳ ei < len(vt.cells) {
-                vt.cells[ei] = {ch: " ", fg: 7, bg: 0};
-                ei = ei + 1;
+        "A" => {
+            // CUU - Cursor Up: CSI n A
+            ≔ mut amount = 1;
+            ⎇ n > 0 {
+                amount = n;
+            }
+            self.cursor_row = self.cursor_row - amount;
+            ⎇ self.cursor_row < 0 {
+                self.cursor_row = 0;
             }
         }
-    }
-
-    // EL - Erase Line: CSI n K
-    ⎇ cmd == "K" {
-        ≔ row_start = vt.cursor_row * vt.cols;
-        ⎇ n == 0 {
-            // Erase from cursor to end of line
-            ≔ mut c = vt.cursor_col;
-            ⟳ c < vt.cols {
-                vt.cells[row_start + c] = {ch: " ", fg: 7, bg: 0};
-                c = c + 1;
+        "B" => {
+            // CUD - Cursor Down: CSI n B
+            ≔ mut amount = 1;
+            ⎇ n > 0 {
+                amount = n;
+            }
+            self.cursor_row = self.cursor_row + amount;
+            ⎇ self.cursor_row >= self.rows {
+                self.cursor_row = self.rows - 1;
             }
         }
-        ⎇ n == 1 {
-            // Erase from start of line to cursor
-            ≔ mut c = 0;
-            ⟳ c <= vt.cursor_col {
-                vt.cells[row_start + c] = {ch: " ", fg: 7, bg: 0};
-                c = c + 1;
+        "C" => {
+            // CUF - Cursor Forward: CSI n C
+            ≔ mut amount = 1;
+            ⎇ n > 0 {
+                amount = n;
+            }
+            self.cursor_col = self.cursor_col + amount;
+            ⎇ self.cursor_col >= self.cols {
+                self.cursor_col = self.cols - 1;
             }
         }
-        ⎇ n == 2 {
-            // Erase entire line
-            ≔ mut c = 0;
-            ⟳ c < vt.cols {
-                vt.cells[row_start + c] = {ch: " ", fg: 7, bg: 0};
-                c = c + 1;
+        "D" => {
+            // CUB - Cursor Back: CSI n D
+            ≔ mut amount = 1;
+            ⎇ n > 0 {
+                amount = n;
+            }
+            self.cursor_col = self.cursor_col - amount;
+            ⎇ self.cursor_col < 0 {
+                self.cursor_col = 0;
             }
         }
-    }
-
-    // CUU - Cursor Up: CSI n A
-    ⎇ cmd == "A" {
-        ≔ mut amount = 1;
-        ⎇ n > 0 {
-            amount = n;
+        "G" => {
+            // CHA - Cursor Horizontal Absolute: CSI n G
+            ≔ mut col = 1;
+            ⎇ n > 0 {
+                col = n;
+            }
+            self.cursor_col = col - 1;
+            ⎇ self.cursor_col >= self.cols {
+                self.cursor_col = self.cols - 1;
+            }
         }
-        vt.cursor_row = vt.cursor_row - amount;
-        ⎇ vt.cursor_row < 0 {
-            vt.cursor_row = 0;
+        "d" => {
+            // VPA - Vertical Position Absolute: CSI n d
+            ≔ mut row = 1;
+            ⎇ n > 0 {
+                row = n;
+            }
+            self.cursor_row = row - 1;
+            ⎇ self.cursor_row >= self.rows {
+                self.cursor_row = self.rows - 1;
+            }
         }
-    }
-
-    // CUD - Cursor Down: CSI n B
-    ⎇ cmd == "B" {
-        ≔ mut amount = 1;
-        ⎇ n > 0 {
-            amount = n;
+        "r" => {
+            // DECSTBM - Set Top/Bottom Margins: CSI top;bottom r
+            ≔ mut top = 1;
+            ≔ mut bottom = self.rows;
+            ⎇ len(params) >= 1 ∧ params[0] > 0 {
+                top = params[0];
+            }
+            ⎇ len(params) >= 2 ∧ params[1] > 0 {
+                bottom = params[1];
+            }
+            self.scroll_top = top - 1;
+            self.scroll_bottom = bottom - 1;
+            // Clamp
+            ⎇ self.scroll_top < 0 {
+                self.scroll_top = 0;
+            }
+            ⎇ self.scroll_bottom >= self.rows {
+                self.scroll_bottom = self.rows - 1;
+            }
+            // Move cursor to home
+            self.cursor_row = 0;
+            self.cursor_col = 0;
         }
-        vt.cursor_row = vt.cursor_row + amount;
-        ⎇ vt.cursor_row >= vt.rows {
-            vt.cursor_row = vt.rows - 1;
+        "s" => {
+            // Save cursor: CSI s
+            self.saved_row = self.cursor_row;
+            self.saved_col = self.cursor_col;
         }
-    }
-
-    // CUF - Cursor Forward: CSI n C
-    ⎇ cmd == "C" {
-        ≔ mut amount = 1;
-        ⎇ n > 0 {
-            amount = n;
+        "u" => {
+            // Restore cursor: CSI u
+            self.cursor_row = self.saved_row;
+            self.cursor_col = self.saved_col;
         }
-        vt.cursor_col = vt.cursor_col + amount;
-        ⎇ vt.cursor_col >= vt.cols {
-            vt.cursor_col = vt.cols - 1;
-        }
-    }
-
-    // CUB - Cursor Back: CSI n D
-    ⎇ cmd == "D" {
-        ≔ mut amount = 1;
-        ⎇ n > 0 {
-            amount = n;
-        }
-        vt.cursor_col = vt.cursor_col - amount;
-        ⎇ vt.cursor_col < 0 {
-            vt.cursor_col = 0;
-        }
-    }
-
-    // CHA - Cursor Horizontal Absolute: CSI n G
-    ⎇ cmd == "G" {
-        ≔ mut col = 1;
-        ⎇ n > 0 {
-            col = n;
-        }
-        vt.cursor_col = col - 1;
-        ⎇ vt.cursor_col >= vt.cols {
-            vt.cursor_col = vt.cols - 1;
-        }
-    }
-
-    // VPA - Vertical Position Absolute: CSI n d
-    ⎇ cmd == "d" {
-        ≔ mut row = 1;
-        ⎇ n > 0 {
-            row = n;
-        }
-        vt.cursor_row = row - 1;
-        ⎇ vt.cursor_row >= vt.rows {
-            vt.cursor_row = vt.rows - 1;
-        }
-    }
-
-    // DECSTBM - Set Top/Bottom Margins: CSI top;bottom r
-    ⎇ cmd == "r" {
-        ≔ mut top = 1;
-        ≔ mut bottom = vt.rows;
-        ⎇ len(params) >= 1 ∧ params[0] > 0 {
-            top = params[0];
-        }
-        ⎇ len(params) >= 2 ∧ params[1] > 0 {
-            bottom = params[1];
-        }
-        vt.scroll_top = top - 1;
-        vt.scroll_bottom = bottom - 1;
-        // Clamp
-        ⎇ vt.scroll_top < 0 {
-            vt.scroll_top = 0;
-        }
-        ⎇ vt.scroll_bottom >= vt.rows {
-            vt.scroll_bottom = vt.rows - 1;
-        }
-        // Move cursor to home
-        vt.cursor_row = 0;
-        vt.cursor_col = 0;
-    }
-
-    // Save cursor: CSI s
-    ⎇ cmd == "s" {
-        vt.saved_row = vt.cursor_row;
-        vt.saved_col = vt.cursor_col;
-    }
-
-    // Restore cursor: CSI u
-    ⎇ cmd == "u" {
-        vt.cursor_row = vt.saved_row;
-        vt.cursor_col = vt.saved_col;
-    }
-
-    // IL - Insert Lines: CSI n L
-    ⎇ cmd == "L" {
-        ≔ mut count = 1;
-        ⎇ n > 0 { count = n; }
-        // Shift lines down from cursor row, clear inserted lines
-        ≔ mut ci = 0;
-        ⟳ ci < count {
-            ≔ mut row = vt.scroll_bottom;
-            ⟳ row > vt.cursor_row {
+        "L" => {
+            // IL - Insert Lines: CSI n L
+            ≔ mut count = 1;
+            ⎇ n > 0 { count = n; }
+            // Shift lines down from cursor row, clear inserted lines
+            ≔ mut ci = 0;
+            ⟳ ci < count {
+                ≔ mut row = self.scroll_bottom;
+                ⟳ row > self.cursor_row {
+                    ≔ mut col = 0;
+                    ⟳ col < self.cols {
+                        self.cells[row * self.cols + col] = self.cells[(row - 1) * self.cols + col];
+                        col = col + 1;
+                    }
+                    row = row - 1;
+                }
+                // Clear the inserted line
                 ≔ mut col = 0;
-                ⟳ col < vt.cols {
-                    vt.cells[row * vt.cols + col] = vt.cells[(row - 1) * vt.cols + col];
+                ⟳ col < self.cols {
+                    self.cells[self.cursor_row * self.cols + col] = {ch: " ", fg: 7, bg: 0};
                     col = col + 1;
                 }
-                row = row - 1;
+                ci = ci + 1;
             }
-            // Clear the inserted line
-            ≔ mut col = 0;
-            ⟳ col < vt.cols {
-                vt.cells[vt.cursor_row * vt.cols + col] = {ch: " ", fg: 7, bg: 0};
-                col = col + 1;
-            }
-            ci = ci + 1;
         }
-    }
-
-    // DL - Delete Lines: CSI n M
-    ⎇ cmd == "M" {
-        ≔ mut count = 1;
-        ⎇ n > 0 { count = n; }
-        ≔ mut ci = 0;
-        ⟳ ci < count {
-            ≔ mut row = vt.cursor_row;
-            ⟳ row < vt.scroll_bottom {
+        "M" => {
+            // DL - Delete Lines: CSI n M
+            ≔ mut count = 1;
+            ⎇ n > 0 { count = n; }
+            ≔ mut ci = 0;
+            ⟳ ci < count {
+                ≔ mut row = self.cursor_row;
+                ⟳ row < self.scroll_bottom {
+                    ≔ mut col = 0;
+                    ⟳ col < self.cols {
+                        self.cells[row * self.cols + col] = self.cells[(row + 1) * self.cols + col];
+                        col = col + 1;
+                    }
+                    row = row + 1;
+                }
+                // Clear the bottom line
                 ≔ mut col = 0;
-                ⟳ col < vt.cols {
-                    vt.cells[row * vt.cols + col] = vt.cells[(row + 1) * vt.cols + col];
+                ⟳ col < self.cols {
+                    self.cells[self.scroll_bottom * self.cols + col] = {ch: " ", fg: 7, bg: 0};
                     col = col + 1;
                 }
-                row = row + 1;
+                ci = ci + 1;
             }
-            // Clear the bottom line
-            ≔ mut col = 0;
-            ⟳ col < vt.cols {
-                vt.cells[vt.scroll_bottom * vt.cols + col] = {ch: " ", fg: 7, bg: 0};
+        }
+        "@" => {
+            // ICH - Insert Characters: CSI n @
+            ≔ mut count = 1;
+            ⎇ n > 0 { count = n; }
+            ≔ row_base = self.cursor_row * self.cols;
+            // Shift chars right from end of line
+            ≔ mut col = self.cols - 1;
+            ⟳ col >= self.cursor_col + count {
+                self.cells[row_base + col] = self.cells[row_base + col - count];
+                col = col - 1;
+            }
+            // Clear inserted positions
+            ≔ mut ci = 0;
+            ⟳ ci < count ∧ self.cursor_col + ci < self.cols {
+                self.cells[row_base + self.cursor_col + ci] = {ch: " ", fg: 7, bg: 0};
+                ci = ci + 1;
+            }
+        }
+        "P" => {
+            // DCH - Delete Characters: CSI n P
+            ≔ mut count = 1;
+            ⎇ n > 0 { count = n; }
+            ≔ row_base = self.cursor_row * self.cols;
+            // Shift chars left
+            ≔ mut col = self.cursor_col;
+            ⟳ col + count < self.cols {
+                self.cells[row_base + col] = self.cells[row_base + col + count];
                 col = col + 1;
             }
-            ci = ci + 1;
-        }
-    }
-
-    // ICH - Insert Characters: CSI n @
-    ⎇ cmd == "@" {
-        ≔ mut count = 1;
-        ⎇ n > 0 { count = n; }
-        ≔ row_base = vt.cursor_row * vt.cols;
-        // Shift chars right from end of line
-        ≔ mut col = vt.cols - 1;
-        ⟳ col >= vt.cursor_col + count {
-            vt.cells[row_base + col] = vt.cells[row_base + col - count];
-            col = col - 1;
-        }
-        // Clear inserted positions
-        ≔ mut ci = 0;
-        ⟳ ci < count ∧ vt.cursor_col + ci < vt.cols {
-            vt.cells[row_base + vt.cursor_col + ci] = {ch: " ", fg: 7, bg: 0};
-            ci = ci + 1;
-        }
-    }
-
-    // DCH - Delete Characters: CSI n P
-    ⎇ cmd == "P" {
-        ≔ mut count = 1;
-        ⎇ n > 0 { count = n; }
-        ≔ row_base = vt.cursor_row * vt.cols;
-        // Shift chars left
-        ≔ mut col = vt.cursor_col;
-        ⟳ col + count < vt.cols {
-            vt.cells[row_base + col] = vt.cells[row_base + col + count];
-            col = col + 1;
-        }
-        // Clear vacated positions at end
-        ≔ mut ci = 0;
-        ⟳ ci < count {
-            ≔ clear_col = vt.cols - 1 - ci;
-            ⎇ clear_col >= 0 {
-                vt.cells[row_base + clear_col] = {ch: " ", fg: 7, bg: 0};
+            // Clear vacated positions at end
+            ≔ mut ci = 0;
+            ⟳ ci < count {
+                ≔ clear_col = self.cols - 1 - ci;
+                ⎇ clear_col >= 0 {
+                    self.cells[row_base + clear_col] = {ch: " ", fg: 7, bg: 0};
+                }
+                ci = ci + 1;
             }
-            ci = ci + 1;
         }
-    }
-
-    // ECH - Erase Characters: CSI n X
-    ⎇ cmd == "X" {
-        ≔ mut count = 1;
-        ⎇ n > 0 { count = n; }
-        ≔ row_base = vt.cursor_row * vt.cols;
-        ≔ mut ci = 0;
-        ⟳ ci < count ∧ vt.cursor_col + ci < vt.cols {
-            vt.cells[row_base + vt.cursor_col + ci] = {ch: " ", fg: 7, bg: 0};
-            ci = ci + 1;
+        "X" => {
+            // ECH - Erase Characters: CSI n X
+            ≔ mut count = 1;
+            ⎇ n > 0 { count = n; }
+            ≔ row_base = self.cursor_row * self.cols;
+            ≔ mut ci = 0;
+            ⟳ ci < count ∧ self.cursor_col + ci < self.cols {
+                self.cells[row_base + self.cursor_col + ci] = {ch: " ", fg: 7, bg: 0};
+                ci = ci + 1;
+            }
         }
-    }
-
-    // CNL - Cursor Next Line: CSI n E
-    ⎇ cmd == "E" {
-        ≔ mut amount = 1;
-        ⎇ n > 0 { amount = n; }
-        vt.cursor_row = vt.cursor_row + amount;
-        ⎇ vt.cursor_row >= vt.rows { vt.cursor_row = vt.rows - 1; }
-        vt.cursor_col = 0;
-    }
-
-    // CPL - Cursor Previous Line: CSI n F
-    ⎇ cmd == "F" {
-        ≔ mut amount = 1;
-        ⎇ n > 0 { amount = n; }
-        vt.cursor_row = vt.cursor_row - amount;
-        ⎇ vt.cursor_row < 0 { vt.cursor_row = 0; }
-        vt.cursor_col = 0;
+        "E" => {
+            // CNL - Cursor Next Line: CSI n E
+            ≔ mut amount = 1;
+            ⎇ n > 0 { amount = n; }
+            self.cursor_row = self.cursor_row + amount;
+            ⎇ self.cursor_row >= self.rows { self.cursor_row = self.rows - 1; }
+            self.cursor_col = 0;
+        }
+        "F" => {
+            // CPL - Cursor Previous Line: CSI n F
+            ≔ mut amount = 1;
+            ⎇ n > 0 { amount = n; }
+            self.cursor_row = self.cursor_row - amount;
+            ⎇ self.cursor_row < 0 { self.cursor_row = 0; }
+            self.cursor_col = 0;
+        }
+        _ => {}
     }
   }
 }
 
 // Enter alternate screen buffer
-rite vterm_enter_alt_screen(vt) {
+rite enter_alt_screen(self) {
     // Save main screen cells
     ≔ mut saved = [];
     ≔ mut i = 0;
-    ⟳ i < len(vt.cells) {
-        push(saved, {ch: vt.cells[i].ch, fg: vt.cells[i].fg, bg: vt.cells[i].bg});
+    ⟳ i < len(self.cells) {
+        push(saved, {ch: self.cells[i].ch, fg: self.cells[i].fg, bg: self.cells[i].bg});
         i = i + 1;
     }
-    vt.alt_cells = saved;
+    self.alt_cells = saved;
     // Save cursor and attributes
-    vt.alt_cursor_row = vt.cursor_row;
-    vt.alt_cursor_col = vt.cursor_col;
-    vt.alt_attr_fg = vt.attr_fg;
-    vt.alt_attr_bg = vt.attr_bg;
+    self.alt_cursor_row = self.cursor_row;
+    self.alt_cursor_col = self.cursor_col;
+    self.alt_attr_fg = self.attr_fg;
+    self.alt_attr_bg = self.attr_bg;
     // Clear screen
     ≔ mut ci = 0;
-    ⟳ ci < len(vt.cells) {
-        vt.cells[ci] = {ch: " ", fg: 7, bg: 0};
+    ⟳ ci < len(self.cells) {
+        self.cells[ci] = {ch: " ", fg: 7, bg: 0};
         ci = ci + 1;
     }
-    vt.cursor_row = 0;
-    vt.cursor_col = 0;
-    vt.in_alt_screen = true;
+    self.cursor_row = 0;
+    self.cursor_col = 0;
+    self.in_alt_screen = true;
 }
 
 // Leave alternate screen buffer
-rite vterm_leave_alt_screen(vt) {
+rite leave_alt_screen(self) {
     // Restore main screen cells
-    ⎇ len(vt.alt_cells) > 0 {
+    ⎇ len(self.alt_cells) > 0 {
         ≔ mut i = 0;
-        ⟳ i < len(vt.alt_cells) ∧ i < len(vt.cells) {
-            vt.cells[i] = vt.alt_cells[i];
+        ⟳ i < len(self.alt_cells) ∧ i < len(self.cells) {
+            self.cells[i] = self.alt_cells[i];
             i = i + 1;
         }
     }
     // Restore cursor and attributes
-    vt.cursor_row = vt.alt_cursor_row;
-    vt.cursor_col = vt.alt_cursor_col;
-    vt.attr_fg = vt.alt_attr_fg;
-    vt.attr_bg = vt.alt_attr_bg;
-    vt.alt_cells = [];
-    vt.in_alt_screen = false;
+    self.cursor_row = self.alt_cursor_row;
+    self.cursor_col = self.alt_cursor_col;
+    self.attr_fg = self.alt_attr_fg;
+    self.attr_bg = self.alt_attr_bg;
+    self.alt_cells = [];
+    self.in_alt_screen = false;
 }
 
 // Set a DEC private mode on or off
-rite vterm_set_dec_mode(vt, mode, enabled) {
+rite set_dec_mode(self, mode, enabled) {
     // ?1 - Application cursor keys
     ⎇ mode == 1 {
-        vt.app_cursor_keys = enabled;
+        self.app_cursor_keys = enabled;
     }
     // ?6 - Origin mode
     ⎇ mode == 6 {
-        vt.origin_mode = enabled;
+        self.origin_mode = enabled;
     }
     // ?7 - Auto-wrap
     ⎇ mode == 7 {
-        vt.auto_wrap = enabled;
+        self.auto_wrap = enabled;
     }
     // ?25 - Cursor visible
     ⎇ mode == 25 {
-        vt.cursor_visible = enabled;
+        self.cursor_visible = enabled;
     }
     // ?1000 - Mouse tracking (normal)
     ⎇ mode == 1000 {
         ⎇ enabled == true {
-            vt.mouse_mode = 1000;
+            self.mouse_mode = 1000;
         } ⎉ {
-            vt.mouse_mode = 0;
+            self.mouse_mode = 0;
         }
     }
     // ?1002 - Mouse button tracking
     ⎇ mode == 1002 {
         ⎇ enabled == true {
-            vt.mouse_mode = 1002;
+            self.mouse_mode = 1002;
         } ⎉ {
-            vt.mouse_mode = 0;
+            self.mouse_mode = 0;
         }
     }
     // ?1003 - Mouse any-event tracking
     ⎇ mode == 1003 {
         ⎇ enabled == true {
-            vt.mouse_mode = 1003;
+            self.mouse_mode = 1003;
         } ⎉ {
-            vt.mouse_mode = 0;
+            self.mouse_mode = 0;
         }
     }
     // ?1006 - SGR mouse mode
     ⎇ mode == 1006 {
-        vt.mouse_sgr = enabled;
+        self.mouse_sgr = enabled;
     }
     // ?1049 - Alternate screen buffer (save/restore)
     ⎇ mode == 1049 {
         ⎇ enabled == true {
-            vterm_enter_alt_screen(vt);
+            self.enter_alt_screen();
         } ⎉ {
-            vterm_leave_alt_screen(vt);
+            self.leave_alt_screen();
         }
     }
     // ?2004 - Bracketed paste
     ⎇ mode == 2004 {
-        vt.bracketed_paste = enabled;
+        self.bracketed_paste = enabled;
     }
 }
 
 // Dispatch DEC private mode sequence (after ? stripped)
-rite vterm_dec_private_dispatch(vt, cmd, buf) {
+rite dec_private_dispatch(self, cmd, buf) {
     ≔ params = vterm_parse_params(buf);
     ≔ mut enabled = false;
     ⎇ cmd == "h" {
@@ -1075,35 +1164,35 @@ rite vterm_dec_private_dispatch(vt, cmd, buf) {
     }
     ≔ mut i = 0;
     ⟳ i < len(params) {
-        vterm_set_dec_mode(vt, params[i], enabled);
+        self.set_dec_mode(params[i], enabled);
         i = i + 1;
     }
 }
 
 // Reverse index: move cursor up; if at scroll_top, shift lines down
-rite vterm_reverse_index(vt) {
-    ⎇ vt.cursor_row == vt.scroll_top {
+rite reverse_index(self) {
+    ⎇ self.cursor_row == self.scroll_top {
         // Shift lines down within scroll region
-        ≔ mut row = vt.scroll_bottom;
-        ⟳ row > vt.scroll_top {
+        ≔ mut row = self.scroll_bottom;
+        ⟳ row > self.scroll_top {
             ≔ mut col = 0;
-            ⟳ col < vt.cols {
-                ≔ dst = row * vt.cols + col;
-                ≔ src = (row - 1) * vt.cols + col;
-                vt.cells[dst] = vt.cells[src];
+            ⟳ col < self.cols {
+                ≔ dst = row * self.cols + col;
+                ≔ src = (row - 1) * self.cols + col;
+                self.cells[dst] = self.cells[src];
                 col = col + 1;
             }
             row = row - 1;
         }
         // Clear the top line of scroll region
         ≔ mut col = 0;
-        ⟳ col < vt.cols {
-            vt.cells[vt.scroll_top * vt.cols + col] = {ch: " ", fg: 7, bg: 0};
+        ⟳ col < self.cols {
+            self.cells[self.scroll_top * self.cols + col] = {ch: " ", fg: 7, bg: 0};
             col = col + 1;
         }
     } ⎉ {
-        ⎇ vt.cursor_row > 0 {
-            vt.cursor_row = vt.cursor_row - 1;
+        ⎇ self.cursor_row > 0 {
+            self.cursor_row = self.cursor_row - 1;
         }
     }
 }
@@ -1123,7 +1212,7 @@ rite sanitize_title(s) {
 }
 
 // Dispatch an OSC sequence
-rite vterm_osc_dispatch(vt, buf) {
+rite osc_dispatch(self, buf) {
     // Find the first semicolon to separate command from payload
     ≔ mut sep_idx = -1;
     ≔ mut si = 0;
@@ -1140,120 +1229,126 @@ rite vterm_osc_dispatch(vt, buf) {
         ≔ payload = substring(buf, sep_idx + 1, len(buf));
         // OSC 0 and OSC 2 set title (sanitize to remove control chars)
         ⎇ cmd_str == "0" ∨ cmd_str == "2" {
-            vt.title = sanitize_title(payload);
+            self.title = sanitize_title(payload);
         }
     }
 }
 
 // Feed a string of data through the VTerm state machine
-rite vterm_feed(vt, data) {
+rite feed(self, data) {
     ≔ mut i = 0;
     ⟳ i < len(data) {
         ≔ ch = to_string(char_at(data, i));
         ≔ code = char_code_at(data, i);
 
-        // State machine: exactly ONE handler fires per byte (⎇/⎉ chain)
-        ⎇ vt.esc_state == "csi" {
-            ⎇ (code >= 64 ∧ code <= 90) ∨ (code >= 97 ∧ code <= 122) {
-                vterm_csi_dispatch(vt, ch, vt.esc_buf);
-                vt.esc_state = "normal";
-                vt.esc_buf = "";
-            } ⎉ {
-                vt.esc_buf = vt.esc_buf + ch;
-                // Cap: prevent unbounded buffer growth
-                ⎇ len(vt.esc_buf) > ESC_BUF_MAX {
-                    vt.esc_state = "normal";
-                    vt.esc_buf = "";
+        // State machine: ⌥ match on EscapeState enum — exactly ONE arm fires per byte
+        ⌥ self.esc_state {
+            EscapeState·Csi => {
+                ⎇ (code >= 64 ∧ code <= 90) ∨ (code >= 97 ∧ code <= 122) {
+                    self.csi_dispatch(ch, self.esc_buf);
+                    self.esc_state = EscapeState·Normal;
+                    self.esc_buf = "";
+                } ⎉ {
+                    self.esc_buf = self.esc_buf + ch;
+                    ⎇ len(self.esc_buf) > ESC_BUF_MAX {
+                        self.esc_state = EscapeState·Normal;
+                        self.esc_buf = "";
+                    }
                 }
             }
-        } ⎉ { ⎇ vt.esc_state == "osc" {
-            ⎇ code == 7 {
-                vterm_osc_dispatch(vt, vt.esc_buf);
-                vt.esc_state = "normal";
-                vt.esc_buf = "";
-            } ⎉ { ⎇ code == 27 {
-                vt.esc_state = "osc_esc";
-            } ⎉ {
-                vt.esc_buf = vt.esc_buf + ch;
-                // Cap: prevent unbounded buffer growth
-                ⎇ len(vt.esc_buf) > ESC_BUF_MAX {
-                    vt.esc_state = "normal";
-                    vt.esc_buf = "";
+            EscapeState·Osc => {
+                ⎇ code == 7 {
+                    self.osc_dispatch(self.esc_buf);
+                    self.esc_state = EscapeState·Normal;
+                    self.esc_buf = "";
+                } ⎉ { ⎇ code == 27 {
+                    self.esc_state = EscapeState·OscEsc;
+                } ⎉ {
+                    self.esc_buf = self.esc_buf + ch;
+                    ⎇ len(self.esc_buf) > ESC_BUF_MAX {
+                        self.esc_state = EscapeState·Normal;
+                        self.esc_buf = "";
+                    }
+                } }
+            }
+            EscapeState·OscEsc => {
+                ⎇ ch == "\\" {
+                    self.osc_dispatch(self.esc_buf);
+                    self.esc_state = EscapeState·Normal;
+                    self.esc_buf = "";
+                } ⎉ {
+                    self.osc_dispatch(self.esc_buf);
+                    self.esc_state = EscapeState·Escape;
+                    self.esc_buf = "";
                 }
-            } }
-        } ⎉ { ⎇ vt.esc_state == "osc_esc" {
-            ⎇ ch == "\\" {
-                vterm_osc_dispatch(vt, vt.esc_buf);
-                vt.esc_state = "normal";
-                vt.esc_buf = "";
-            } ⎉ {
-                vterm_osc_dispatch(vt, vt.esc_buf);
-                vt.esc_state = "escape";
-                vt.esc_buf = "";
             }
-        } ⎉ { ⎇ vt.esc_state == "dcs" {
-            ⎇ code == 27 {
-                vt.esc_state = "dcs_esc";
-            }
-        } ⎉ { ⎇ vt.esc_state == "dcs_esc" {
-            ⎇ ch == "\\" {
-                vt.esc_state = "normal";
-                vt.esc_buf = "";
-            } ⎉ {
-                vt.esc_state = "dcs";
-            }
-        } ⎉ { ⎇ vt.esc_state == "charset" {
-            vt.esc_state = "normal";
-        } ⎉ { ⎇ vt.esc_state == "escape" {
-            ⎇ ch == "[" {
-                vt.esc_state = "csi";
-                vt.esc_buf = "";
-            } ⎉ { ⎇ ch == "]" {
-                vt.esc_state = "osc";
-                vt.esc_buf = "";
-            } ⎉ { ⎇ ch == "P" {
-                vt.esc_state = "dcs";
-                vt.esc_buf = "";
-            } ⎉ { ⎇ ch == "(" ∨ ch == ")" ∨ ch == "*" ∨ ch == "+" {
-                vt.esc_state = "charset";
-            } ⎉ { ⎇ ch == "7" {
-                vt.saved_row = vt.cursor_row;
-                vt.saved_col = vt.cursor_col;
-                vt.esc_state = "normal";
-            } ⎉ { ⎇ ch == "8" {
-                vt.cursor_row = vt.saved_row;
-                vt.cursor_col = vt.saved_col;
-                vt.esc_state = "normal";
-            } ⎉ { ⎇ ch == "M" {
-                vterm_reverse_index(vt);
-                vt.esc_state = "normal";
-            } ⎉ {
-                // Unknown escape sequence, reset
-                vt.esc_state = "normal";
-            } } } } } } }
-        } ⎉ {
-            // Normal state — ⎇/⎉ chain so only ONE handler fires per byte
-            ⎇ code == 27 {
-                vt.esc_state = "escape";
-                vt.esc_buf = "";
-            } ⎉ { ⎇ code == 13 {
-                vt.cursor_col = 0;
-            } ⎉ { ⎇ code == 10 {
-                vt.cursor_col = 0;  // LF implies CR for internal feeds
-                vt.cursor_row = vt.cursor_row + 1;
-                ⎇ vt.cursor_row > vt.scroll_bottom {
-                    vterm_scroll_up(vt);
-                    vt.cursor_row = vt.scroll_bottom;
+            EscapeState·Dcs => {
+                ⎇ code == 27 {
+                    self.esc_state = EscapeState·DcsEsc;
                 }
-            } ⎉ { ⎇ code == 8 {
-                ⎇ vt.cursor_col > 0 { vt.cursor_col = vt.cursor_col - 1; }
-            } ⎉ { ⎇ code == 9 {
-                vt.cursor_col = ((vt.cursor_col / 8) + 1) * 8;
-                ⎇ vt.cursor_col >= vt.cols { vt.cursor_col = vt.cols - 1; }
-            } ⎉ { ⎇ code >= 32 {
-                vterm_put_char(vt, ch);
-            } } } } } }
-        } } } } } } }
+            }
+            EscapeState·DcsEsc => {
+                ⎇ ch == "\\" {
+                    self.esc_state = EscapeState·Normal;
+                    self.esc_buf = "";
+                } ⎉ {
+                    self.esc_state = EscapeState·Dcs;
+                }
+            }
+            EscapeState·Charset => {
+                self.esc_state = EscapeState·Normal;
+            }
+            EscapeState·Escape => {
+                ⎇ ch == "[" {
+                    self.esc_state = EscapeState·Csi;
+                    self.esc_buf = "";
+                } ⎉ { ⎇ ch == "]" {
+                    self.esc_state = EscapeState·Osc;
+                    self.esc_buf = "";
+                } ⎉ { ⎇ ch == "P" {
+                    self.esc_state = EscapeState·Dcs;
+                    self.esc_buf = "";
+                } ⎉ { ⎇ ch == "(" ∨ ch == ")" ∨ ch == "*" ∨ ch == "+" {
+                    self.esc_state = EscapeState·Charset;
+                } ⎉ { ⎇ ch == "7" {
+                    self.saved_row = self.cursor_row;
+                    self.saved_col = self.cursor_col;
+                    self.esc_state = EscapeState·Normal;
+                } ⎉ { ⎇ ch == "8" {
+                    self.cursor_row = self.saved_row;
+                    self.cursor_col = self.saved_col;
+                    self.esc_state = EscapeState·Normal;
+                } ⎉ { ⎇ ch == "M" {
+                    self.reverse_index();
+                    self.esc_state = EscapeState·Normal;
+                } ⎉ {
+                    self.esc_state = EscapeState·Normal;
+                } } } } } } }
+            }
+            _ => {
+                // Normal state — ⎇/⎉ chain so only ONE handler fires per byte
+                ⎇ code == 27 {
+                    self.esc_state = EscapeState·Escape;
+                    self.esc_buf = "";
+                } ⎉ { ⎇ code == 13 {
+                    self.cursor_col = 0;
+                } ⎉ { ⎇ code == 10 {
+                    self.cursor_col = 0;  // LF implies CR for internal feeds
+                    self.cursor_row = self.cursor_row + 1;
+                    ⎇ self.cursor_row > self.scroll_bottom {
+                        self.scroll_up();
+                        self.cursor_row = self.scroll_bottom;
+                    }
+                } ⎉ { ⎇ code == 8 {
+                    ⎇ self.cursor_col > 0 { self.cursor_col = self.cursor_col - 1; }
+                } ⎉ { ⎇ code == 9 {
+                    self.cursor_col = ((self.cursor_col / 8) + 1) * 8;
+                    ⎇ self.cursor_col >= self.cols { self.cursor_col = self.cols - 1; }
+                } ⎉ { ⎇ code >= 32 {
+                    self.put_char(ch);
+                } } } } } }
+            }
+        }
 
         i = i + 1;
     }
@@ -1261,36 +1356,36 @@ rite vterm_feed(vt, data) {
 }
 
 // Blit VTerm cells to the main Grid at the given region (inside borders)
-rite vterm_blit(vt, grid, region) {
+rite blit(self, grid, region) {
     ≔ inner_x = region.x + 1;
     ≔ inner_y = region.y + 1;
 
     // Check if scrolled back
-    ⎇ vt.scroll_offset > 0 ∧ len(vt.scrollback) > 0 {
+    ⎇ self.scroll_offset > 0 ∧ len(self.scrollback) > 0 {
         // Render from scrollback
-        ≔ mut sb_start = len(vt.scrollback) - vt.scroll_offset;
+        ≔ mut sb_start = len(self.scrollback) - self.scroll_offset;
         ⎇ sb_start < 0 {
             sb_start = 0;
         }
         ≔ mut row = 0;
-        ⟳ row < vt.rows {
+        ⟳ row < self.rows {
             ≔ sb_idx = sb_start + row;
-            ⎇ sb_idx < len(vt.scrollback) {
+            ⎇ sb_idx < len(self.scrollback) {
                 // Render scrollback line
-                ≔ line = vt.scrollback[sb_idx];
+                ≔ line = self.scrollback[sb_idx];
                 ≔ mut col = 0;
-                ⟳ col < vt.cols ∧ col < len(line) {
-                    Grid·set(grid, inner_y + row, inner_x + col, line[col].ch, line[col].fg, line[col].bg);
+                ⟳ col < self.cols ∧ col < len(line) {
+                    grid.set(inner_y + row, inner_x + col, line[col].ch, line[col].fg, line[col].bg);
                     col = col + 1;
                 }
             } ⎉ {
                 // Render from live buffer (for lines beyond scrollback)
-                ≔ live_row = row - (len(vt.scrollback) - sb_start);
-                ⎇ live_row >= 0 ∧ live_row < vt.rows {
+                ≔ live_row = row - (len(self.scrollback) - sb_start);
+                ⎇ live_row >= 0 ∧ live_row < self.rows {
                     ≔ mut col = 0;
-                    ⟳ col < vt.cols {
-                        ≔ idx = live_row * vt.cols + col;
-                        Grid·set(grid, inner_y + row, inner_x + col, vt.cells[idx].ch, vt.cells[idx].fg, vt.cells[idx].bg);
+                    ⟳ col < self.cols {
+                        ≔ idx = live_row * self.cols + col;
+                        grid.set(inner_y + row, inner_x + col, self.cells[idx].ch, self.cells[idx].fg, self.cells[idx].bg);
                         col = col + 1;
                     }
                 }
@@ -1300,12 +1395,12 @@ rite vterm_blit(vt, grid, region) {
     } ⎉ {
         // Live view — render directly from VTerm cells
         ≔ mut row = 0;
-        ⟳ row < vt.rows {
+        ⟳ row < self.rows {
             ≔ mut col = 0;
-            ⟳ col < vt.cols {
-                ≔ idx = row * vt.cols + col;
-                ⎇ idx < len(vt.cells) {
-                    Grid·set(grid, inner_y + row, inner_x + col, vt.cells[idx].ch, vt.cells[idx].fg, vt.cells[idx].bg);
+            ⟳ col < self.cols {
+                ≔ idx = row * self.cols + col;
+                ⎇ idx < len(self.cells) {
+                    grid.set(inner_y + row, inner_x + col, self.cells[idx].ch, self.cells[idx].fg, self.cells[idx].bg);
                 }
                 col = col + 1;
             }
@@ -1313,6 +1408,8 @@ rite vterm_blit(vt, grid, region) {
         }
     }
 }
+
+} // end ⊢ VTerm (part 2)
 
 // ============================================================================
 // Section 2c: Configuration
@@ -1528,9 +1625,10 @@ rite load_session() {
     ↩ sess_panes
 }
 
+⊢ VTerm {
 // Restore scrollback into a VTerm from saved text lines
 // lines: array of strings, one per scrollback row
-rite vterm_restore_scrollback(vt, lines) {
+rite restore_scrollback(self, lines) {
     ≔ mut si = 0;
     ⟳ si < len(lines) {
         ≔ line = lines[si];
@@ -1542,23 +1640,24 @@ rite vterm_restore_scrollback(vt, lines) {
             ci = ci + 1;
         }
         // Pad row to terminal width
-        ⟳ len(cells) < vt.cols {
+        ⟳ len(cells) < self.cols {
             push(cells, {ch: " ", fg: 7, bg: 0, dirty: false});
         }
-        push(vt.scrollback, cells);
+        push(self.scrollback, cells);
         // Trim scrollback to max
-        ⟳ len(vt.scrollback) > vt.scrollback_max {
+        ⟳ len(self.scrollback) > self.scrollback_max {
             ≔ mut trimmed = [];
             ≔ mut ti = 1;
-            ⟳ ti < len(vt.scrollback) {
-                push(trimmed, vt.scrollback[ti]);
+            ⟳ ti < len(self.scrollback) {
+                push(trimmed, self.scrollback[ti]);
                 ti = ti + 1;
             }
-            vt.scrollback = trimmed;
+            self.scrollback = trimmed;
         }
         si = si + 1;
     }
 }
+} // end ⊢ VTerm (part 3)
 
 // ============================================================================
 // Section 2c: Named Profiles (Phase 19)
@@ -1646,7 +1745,7 @@ rite render_profile_picker(grid, region, profiles, selected) {
     ⟳ r < inner_h {
         ≔ mut c = 0;
         ⟳ c < inner_w {
-            Grid·set(grid, inner_y + r, inner_x + c, " ", 7, 0);
+            grid.set(inner_y + r, inner_x + c, " ", 7, 0);
             c = c + 1;
         }
         r = r + 1;
@@ -1656,7 +1755,7 @@ rite render_profile_picker(grid, region, profiles, selected) {
     ≔ title_str = "-- Profiles (Enter=load, ESC=cancel) --";
     ≔ mut ci = 0;
     ⟳ ci < len(title_str) ∧ ci < inner_w {
-        Grid·set(grid, inner_y, inner_x + ci, to_string(char_at(title_str, ci)), 14, 0);
+        grid.set(inner_y, inner_x + ci, to_string(char_at(title_str, ci)), 14, 0);
         ci = ci + 1;
     }
 
@@ -1674,7 +1773,7 @@ rite render_profile_picker(grid, region, profiles, selected) {
         ⎇ pi == selected { fg = 11; }
         ≔ mut lc = 0;
         ⟳ lc < len(line) ∧ lc < inner_w {
-            Grid·set(grid, inner_y + 1 + pi, inner_x + lc, to_string(char_at(line, lc)), fg, 0);
+            grid.set(inner_y + 1 + pi, inner_x + lc, to_string(char_at(line, lc)), fg, 0);
             lc = lc + 1;
         }
         pi = pi + 1;
@@ -1716,11 +1815,11 @@ rite relayout_panes(panes, screen_w, screen_h, screen, focus) {
     ≔ mut i = 0;
     ⟳ i < len(panes) {
         panes[i].region = regions[i];
-        vterm_resize(panes[i].vterm, regions[i].h - 2, regions[i].w - 2);
+        panes[i].vterm.resize(regions[i].h - 2, regions[i].w - 2);
         ⎇ panes[i].alive == true {
             Pty·set_size(panes[i].master_fd, regions[i].h - 2, regions[i].w - 2);
         }
-        vterm_blit(panes[i].vterm, screen, panes[i].region);
+        panes[i].vterm.blit(screen, panes[i].region);
         ≔ t = pane_title(panes[i], i, focus);
         ≔ tc = border_colors(panes[i].pane_type, i == focus);
         render_border(screen, panes[i].region, t, tc.border_fg, tc.title_fg, i == focus);
@@ -1738,12 +1837,12 @@ rite relayout_panes_forced(panes, screen_w, screen_h, screen, focus, rows, cols)
         ≔ ri = i;
         ⎇ ri < len(regions) {
             panes[i].region = regions[ri];
-            vterm_resize(panes[i].vterm, regions[ri].h - 2, regions[ri].w - 2);
+            panes[i].vterm.resize(regions[ri].h - 2, regions[ri].w - 2);
             ⎇ panes[i].alive == true {
                 Pty·set_size(panes[i].master_fd, regions[ri].h - 2, regions[ri].w - 2);
             }
         }
-        vterm_blit(panes[i].vterm, screen, panes[i].region);
+        panes[i].vterm.blit(screen, panes[i].region);
         ≔ t = pane_title(panes[i], i, focus);
         ≔ tc = border_colors(panes[i].pane_type, i == focus);
         render_border(screen, panes[i].region, t, tc.border_fg, tc.title_fg, i == focus);
@@ -1802,65 +1901,67 @@ rite layout_grid(rows, cols, screen_w, screen_h) {
 // Section 4: Screen Buffer (Grid)
 // ============================================================================
 
-// Create a flat cell buffer for the screen
-rite Grid·new(rows, cols) {
-    ≔ total = rows * cols;
-    ≔ cells = [];
-    ≔ mut i = 0;
-    ⟳ i < total {
-        push(cells, Cell·new(" ", 7, 0, true));
-        i = i + 1;
+⊢ Grid {
+    // Create a flat cell buffer for the screen
+    rite new(rows, cols) {
+        ≔ total = rows * cols;
+        ≔ cells = [];
+        ≔ mut i = 0;
+        ⟳ i < total {
+            push(cells, Cell·new(" ", 7, 0, true));
+            i = i + 1;
+        }
+        ≔ grid = Grid {
+            rows: rows,
+            cols: cols,
+            cells: cells
+        };
+        ↩ grid
     }
-    ≔ grid = {
-        rows: rows,
-        cols: cols,
-        cells: cells
-    };
-    ↩ grid
-}
 
-// Set a cell at (row, col) in the grid — only marks dirty if content changed
-rite Grid·set(grid, row, col, ch, fg, bg) {
-    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
-        ≔ idx = row * grid.cols + col;
-        ≔ c = grid.cells[idx];
-        ⎇ c.ch != ch ∨ c.fg != fg ∨ c.bg != bg {
-            grid.cells[idx] = Cell·new(ch, fg, bg, true);
+    // Set a cell at (row, col) in the grid — only marks dirty if content changed
+    rite set(self, row, col, ch, fg, bg) {
+        ⎇ row >= 0 ∧ row < self.rows ∧ col >= 0 ∧ col < self.cols {
+            ≔ idx = row * self.cols + col;
+            ≔ c = self.cells[idx];
+            ⎇ c.ch != ch ∨ c.fg != fg ∨ c.bg != bg {
+                self.cells[idx] = Cell·new(ch, fg, bg, true);
+            }
         }
     }
-}
 
-// Get a cell at (row, col)
-rite Grid·get(grid, row, col) {
-    ≔ mut result = Cell·new(" ", 7, 0, false);
-    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
-        ≔ idx = row * grid.cols + col;
-        result = grid.cells[idx];
-    }
-    result
-}
-
-// Count dirty cells
-rite Grid·dirty_count(grid) {
-    ≔ mut count = 0;
-    ≔ total = grid.rows * grid.cols;
-    ≔ mut i = 0;
-    ⟳ i < total {
-        ⎇ grid.cells[i].dirty == true {
-            count = count + 1;
+    // Get a cell at (row, col)
+    rite get(self, row, col) {
+        ≔ mut result = Cell·new(" ", 7, 0, false);
+        ⎇ row >= 0 ∧ row < self.rows ∧ col >= 0 ∧ col < self.cols {
+            ≔ idx = row * self.cols + col;
+            result = self.cells[idx];
         }
-        i = i + 1;
+        result
     }
-    count
-}
 
-// Clear all dirty flags — in-place mutation, no allocations
-rite Grid·clear_dirty(grid) {
-    ≔ total = grid.rows * grid.cols;
-    ≔ mut i = 0;
-    ⟳ i < total {
-        grid.cells[i].dirty = false;
-        i = i + 1;
+    // Count dirty cells
+    rite dirty_count(self) {
+        ≔ mut count = 0;
+        ≔ total = self.rows * self.cols;
+        ≔ mut i = 0;
+        ⟳ i < total {
+            ⎇ self.cells[i].dirty == true {
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        count
+    }
+
+    // Clear all dirty flags — in-place mutation, no allocations
+    rite clear_dirty(self) {
+        ≔ total = self.rows * self.cols;
+        ≔ mut i = 0;
+        ⟳ i < total {
+            self.cells[i].dirty = false;
+            i = i + 1;
+        }
     }
 }
 
@@ -1910,28 +2011,28 @@ rite render_border(grid, region, title, border_fg, title_fg, is_focused) {
     }
 
     // Top edge
-    Grid·set(grid, y, x, btl, border_fg, 0);
+    grid.set(y, x, btl, border_fg, 0);
     ≔ mut c = 1;
     ⟳ c < w - 1 {
-        Grid·set(grid, y, x + c, bh, border_fg, 0);
+        grid.set(y, x + c, bh, border_fg, 0);
         c = c + 1;
     }
-    Grid·set(grid, y, x + w - 1, btr, border_fg, 0);
+    grid.set(y, x + w - 1, btr, border_fg, 0);
 
     // Bottom edge
-    Grid·set(grid, y + h - 1, x, bbl, border_fg, 0);
+    grid.set(y + h - 1, x, bbl, border_fg, 0);
     c = 1;
     ⟳ c < w - 1 {
-        Grid·set(grid, y + h - 1, x + c, bh, border_fg, 0);
+        grid.set(y + h - 1, x + c, bh, border_fg, 0);
         c = c + 1;
     }
-    Grid·set(grid, y + h - 1, x + w - 1, bbr, border_fg, 0);
+    grid.set(y + h - 1, x + w - 1, bbr, border_fg, 0);
 
     // Side edges
     ≔ mut r = 1;
     ⟳ r < h - 1 {
-        Grid·set(grid, y + r, x, bv, border_fg, 0);
-        Grid·set(grid, y + r, x + w - 1, bv, border_fg, 0);
+        grid.set(y + r, x, bv, border_fg, 0);
+        grid.set(y + r, x + w - 1, bv, border_fg, 0);
         r = r + 1;
     }
 
@@ -1943,11 +2044,11 @@ rite render_border(grid, region, title, border_fg, title_fg, is_focused) {
             ≔ mut tw = 0;
             ⟳ ti < len(title) ∧ tw < max_title_cols {
                 ≔ tch = to_string(char_at(title, ti));
-                Grid·set(grid, y, x + 2 + tw, tch, title_fg, 0);
+                grid.set(y, x + 2 + tw, tch, title_fg, 0);
                 ⎇ is_fullwidth(tch) == true {
                     // Placeholder for second column of fullwidth char
                     ⎇ tw + 1 < max_title_cols {
-                        Grid·set(grid, y, x + 2 + tw + 1, "", title_fg, 0);
+                        grid.set(y, x + 2 + tw + 1, "", title_fg, 0);
                     }
                     tw = tw + 2;
                 } ⎉ {
@@ -1976,7 +2077,7 @@ rite render_content(grid, region, text) {
             col = 0;
         } ⎉ {
             ⎇ col < inner_w {
-                Grid·set(grid, inner_y + row, inner_x + col, ch, 7, 0);
+                grid.set(inner_y + row, inner_x + col, ch, 7, 0);
                 col = col + 1;
             }
         }
@@ -2018,6 +2119,7 @@ rite build_help_text() {
     t = t + "^B+^B   Send ^B to pane\n";
     t = t + "^B+</>  Swap pane\n";
     t = t + "^B+B    Broadcast toggle\n";
+    t = t + "^B+T    Task queue overlay\n";
     ↩ t
 }
 
@@ -2027,13 +2129,13 @@ rite render_status_bar(grid, text) {
     ≔ mut c = 0;
     // Fill with inverse video spaces
     ⟳ c < grid.cols {
-        Grid·set(grid, row, c, " ", 0, 7);
+        grid.set(row, c, " ", 0, 7);
         c = c + 1;
     }
     // Write status text
     ≔ mut i = 0;
     ⟳ i < len(text) ∧ i < grid.cols {
-        Grid·set(grid, row, i, to_string(char_at(text, i)), 0, 7);
+        grid.set(row, i, to_string(char_at(text, i)), 0, 7);
         i = i + 1;
     }
 }
@@ -2044,7 +2146,7 @@ rite render_status_bar_styled(grid, focus, panes, mode) {
     ≔ mut col = 0;
     // Fill row with spaces (fg=7, bg=0)
     ⟳ col < grid.cols {
-        Grid·set(grid, row, col, " ", 7, 0);
+        grid.set(row, col, " ", 7, 0);
         col = col + 1;
     }
     col = 0;
@@ -2067,7 +2169,7 @@ rite render_status_bar_styled(grid, focus, panes, mode) {
     } } } }
     ≔ mut pi = 0;
     ⟳ pi < len(pill) ∧ col < grid.cols {
-        Grid·set(grid, row, col, to_string(char_at(pill, pi)), 0, pill_bg);
+        grid.set(row, col, to_string(char_at(pill, pi)), 0, pill_bg);
         col = col + 1;
         pi = pi + 1;
     }
@@ -2076,14 +2178,14 @@ rite render_status_bar_styled(grid, focus, panes, mode) {
     ≔ pane_info = " [" + to_string(focus + 1) + "/" + to_string(len(panes)) + "] " + panes[focus].pane_type + " ";
     ≔ mut ii = 0;
     ⟳ ii < len(pane_info) ∧ col < grid.cols {
-        Grid·set(grid, row, col, to_string(char_at(pane_info, ii)), 15, 0);
+        grid.set(row, col, to_string(char_at(pane_info, ii)), 15, 0);
         col = col + 1;
         ii = ii + 1;
     }
 
     // 3. Separator
     ⎇ col < grid.cols {
-        Grid·set(grid, row, col, "│", 8, 0);
+        grid.set(row, col, "│", 8, 0);
         col = col + 1;
     }
 
@@ -2100,7 +2202,7 @@ rite render_status_bar_styled(grid, focus, panes, mode) {
     } } }
     ≔ mut hi = 0;
     ⟳ hi < len(hints) ∧ col < grid.cols {
-        Grid·set(grid, row, col, to_string(char_at(hints, hi)), 7, 0);
+        grid.set(row, col, to_string(char_at(hints, hi)), 7, 0);
         col = col + 1;
         hi = hi + 1;
     }
@@ -2111,7 +2213,7 @@ rite render_status_bar_styled(grid, focus, panes, mode) {
     ⎇ ver_start > col {
         ≔ mut vi = 0;
         ⟳ vi < len(ver) {
-            Grid·set(grid, row, ver_start + vi, to_string(char_at(ver, vi)), 8, 0);
+            grid.set(row, ver_start + vi, to_string(char_at(ver, vi)), 8, 0);
             vi = vi + 1;
         }
     }
@@ -2127,7 +2229,7 @@ rite render_bcast_pill(grid) {
     ⎇ badge_start < 0 { badge_start = 0; }
     ≔ mut bi = 0;
     ⟳ bi < len(badge) ∧ badge_start + bi < grid.cols {
-        Grid·set(grid, row, badge_start + bi, to_string(char_at(badge, bi)), 15, 1);
+        grid.set(row, badge_start + bi, to_string(char_at(badge, bi)), 15, 1);
         bi = bi + 1;
     }
 }
@@ -2186,7 +2288,7 @@ rite flush_dirty(grid) {
         ≔ buf = concat_all(parts);
         Sys·write(1, buf, len(buf));
     }
-    Grid·clear_dirty(grid);
+    grid.clear_dirty();
 }
 
 // ============================================================================
@@ -2485,7 +2587,7 @@ rite render_copy_mode(grid, region, cm) {
                 fg = 0;
                 bg = 15;
             }
-            Grid·set(grid, inner_y + row, inner_x + col, ch, fg, bg);
+            grid.set(inner_y + row, inner_x + col, ch, fg, bg);
             col = col + 1;
         }
         row = row + 1;
@@ -2506,13 +2608,62 @@ rite render_copy_mode(grid, region, cm) {
             ⎇ pi < len(prompt) {
                 pch = to_string(char_at(prompt, pi));
             }
-            Grid·set(grid, inner_y + inner_h - 1, inner_x + pi, pch, 15, 0);
+            grid.set(inner_y + inner_h - 1, inner_x + pi, pch, 15, 0);
             pi = pi + 1;
         }
     }
 }
 
 // Render help overlay centered in a pane region
+rite render_task_overlay(grid, region, tasks) {
+    ≔ inner_x = region.x + 1; ≔ inner_y = region.y + 1;
+    ≔ inner_w = region.w - 2; ≔ inner_h = region.h - 2;
+    // Clear
+    ≔ mut r = 0;
+    ⟳ r < inner_h {
+        ≔ mut c = 0;
+        ⟳ c < inner_w { grid.set(inner_y + r, inner_x + c, " ", 7, 0); c = c + 1; }
+        r = r + 1;
+    }
+    // Count by status
+    ≔ mut n_p = 0; ≔ mut n_d = 0; ≔ mut n_done = 0; ≔ mut ci = 0;
+    ⟳ ci < len(tasks) {
+        ≔ s = map_get(tasks[ci], "status");
+        ⎇ s == "pending"    { n_p    = n_p    + 1; }
+        ⎇ s == "dispatched" { n_d    = n_d    + 1; }
+        ⎇ s == "done"       { n_done = n_done + 1; }
+        ci = ci + 1;
+    }
+    // Header (cyan)
+    ≔ header = "-- Tasks: " + to_string(n_p) + " pending  " + to_string(n_d) +
+               " active  " + to_string(n_done) + " done  (any key=close) --";
+    ≔ mut hc = 0;
+    ⟳ hc < len(header) ∧ hc < inner_w {
+        grid.set(inner_y, inner_x + hc, to_string(char_at(header, hc)), 14, 0);
+        hc = hc + 1;
+    }
+    // Non-done task rows (pending=fg15, dispatched=fg11)
+    ≔ mut row = 1; ≔ mut ti = 0;
+    ⟳ ti < len(tasks) ∧ row < inner_h {
+        ≔ status = map_get(tasks[ti], "status");
+        ⎇ status != "done" {
+            ≔ mut glyph = ">"; ≔ mut fg = 15;
+            ⎇ status == "dispatched" { glyph = "~"; fg = 11; }
+            ≔ mut ttext = map_get(tasks[ti], "text");
+            ≔ max_t = inner_w - 2;
+            ⎇ len(ttext) > max_t { ttext = substring(ttext, 0, max_t - 1) + ">"; }
+            ≔ line = glyph + " " + ttext;
+            ≔ mut lc = 0;
+            ⟳ lc < len(line) ∧ lc < inner_w {
+                grid.set(inner_y + row, inner_x + lc, to_string(char_at(line, lc)), fg, 0);
+                lc = lc + 1;
+            }
+            row = row + 1;
+        }
+        ti = ti + 1;
+    }
+}
+
 rite render_help_overlay(grid, region) {
     ≔ help = build_help_text();
     ≔ inner_x = region.x + 1;
@@ -2525,7 +2676,7 @@ rite render_help_overlay(grid, region) {
     ⟳ r < inner_h {
         ≔ mut c = 0;
         ⟳ c < inner_w {
-            Grid·set(grid, inner_y + r, inner_x + c, " ", 7, 0);
+            grid.set(inner_y + r, inner_x + c, " ", 7, 0);
             c = c + 1;
         }
         r = r + 1;
@@ -2542,7 +2693,7 @@ rite render_help_overlay(grid, region) {
             col = 0;
         } ⎉ {
             ⎇ col < inner_w {
-                Grid·set(grid, inner_y + row, inner_x + col, ch, 14, 0);
+                grid.set(inner_y + row, inner_x + col, ch, 14, 0);
                 col = col + 1;
             }
         }
@@ -2555,48 +2706,53 @@ rite render_help_overlay(grid, region) {
 // ============================================================================
 
 // Copy mode state
-rite CopyModeState·new() {
-    ↩ {
-        active: false,
-        cursor_row: 0,
-        cursor_col: 0,
-        viewport_row: 0,
-        selecting: false,
-        select_start_row: 0,
-        select_start_col: 0,
-        line_mode: false,
-        text_lines: [],
-        search_active: false,
-        search_query: "",
-        search_matches: [],
-        search_current: -1,
-        search_saved_row: 0,
-        search_saved_col: 0,
-        search_saved_viewport: 0
+⊢ CopyModeState {
+    rite new() {
+        ↩ CopyModeState {
+            active: false,
+            cursor_row: 0,
+            cursor_col: 0,
+            viewport_row: 0,
+            selecting: false,
+            select_start_row: 0,
+            select_start_col: 0,
+            line_mode: false,
+            text_lines: [],
+            search_active: false,
+            search_query: "",
+            search_matches: [],
+            search_current: -1,
+            search_saved_row: 0,
+            search_saved_col: 0,
+            search_saved_viewport: 0
+        }
     }
 }
 
 // Input state machine
-rite InputState·new(leader_key, bindings) {
-    ≔ state = {
-        leader_active: false,
-        mouse_mode: true,
-        escape_buf: "",
-        in_escape: false,
-        last_escape_buf: "",
-        confirming_close: false,
-        confirming_quit: false,
-        showing_help: false,
-        showing_picker: false,
-        picker_profiles: [],
-        picker_selected: 0,
-        active_profile: "default",
-        leader_key: leader_key,
-        bindings: bindings,
-        bcast: false,
-        copy_mode: CopyModeState·new()
-    };
-    ↩ state
+⊢ InputState {
+    rite new(leader_key, bindings) {
+        ≔ state = InputState {
+            leader_active: false,
+            mouse_mode: true,
+            escape_buf: "",
+            in_escape: false,
+            last_escape_buf: "",
+            confirming_close: false,
+            confirming_quit: false,
+            showing_help: false,
+            showing_picker: false,
+            picker_profiles: [],
+            picker_selected: 0,
+            active_profile: "default",
+            leader_key: leader_key,
+            bindings: bindings,
+            bcast: false,
+            showing_tasks: false,
+            copy_mode: CopyModeState·new()
+        };
+        ↩ state
+    }
 }
 
 // Process a single input byte, returns action string
@@ -2608,42 +2764,95 @@ rite process_input(input_state, byte, pane_count) {
         ≔ cm = input_state.copy_mode;
         // Search input intercept — captures all input when search is active
         ⎇ cm.search_active == true {
-            ⎇ byte == 27 {
-                // ESC: cancel search, restore position
-                cm.search_active = false;
+            ⌥ byte {
+                27 => {
+                    // ESC: cancel search, restore position
+                    cm.search_active = false;
+                    cm.search_query = "";
+                    cm.search_matches = [];
+                    cm.search_current = -1;
+                    cm.cursor_row = cm.search_saved_row;
+                    cm.cursor_col = cm.search_saved_col;
+                    cm.viewport_row = cm.search_saved_viewport;
+                    ↩ "copy_render"
+                }
+                13 => {
+                    // Enter: accept search, keep position
+                    cm.search_active = false;
+                    ↩ "copy_render"
+                }
+                127 | 8 => {
+                    // Backspace: remove last char
+                    ⎇ len(cm.search_query) > 0 {
+                        cm.search_query = substring(cm.search_query, 0, len(cm.search_query) - 1);
+                    }
+                    cm.search_matches = find_all_matches(cm.text_lines, cm.search_query);
+                    cm.search_current = nearest_match(cm.search_matches, cm.cursor_row, "backward");
+                    ⎇ cm.search_current >= 0 {
+                        cm.cursor_row = cm.search_matches[cm.search_current].row;
+                        cm.cursor_col = cm.search_matches[cm.search_current].col;
+                    }
+                    ↩ "copy_render"
+                }
+                14 => {
+                    // Ctrl-N: next match during search
+                    ⎇ len(cm.search_matches) > 0 {
+                        cm.search_current = (cm.search_current + 1) % len(cm.search_matches);
+                        cm.cursor_row = cm.search_matches[cm.search_current].row;
+                        cm.cursor_col = cm.search_matches[cm.search_current].col;
+                    }
+                    ↩ "copy_render"
+                }
+                16 => {
+                    // Ctrl-P: previous match during search
+                    ⎇ len(cm.search_matches) > 0 {
+                        cm.search_current = cm.search_current - 1;
+                        ⎇ cm.search_current < 0 { cm.search_current = len(cm.search_matches) - 1; }
+                        cm.cursor_row = cm.search_matches[cm.search_current].row;
+                        cm.cursor_col = cm.search_matches[cm.search_current].col;
+                    }
+                    ↩ "copy_render"
+                }
+                _ => {
+                    ⎇ byte >= 32 ∧ byte < 127 {
+                        // Printable: append to query
+                        cm.search_query = cm.search_query + from_char_code(byte);
+                        cm.search_matches = find_all_matches(cm.text_lines, cm.search_query);
+                        cm.search_current = nearest_match(cm.search_matches, cm.cursor_row, "backward");
+                        ⎇ cm.search_current >= 0 {
+                            cm.cursor_row = cm.search_matches[cm.search_current].row;
+                            cm.cursor_col = cm.search_matches[cm.search_current].col;
+                        }
+                        ↩ "copy_render"
+                    }
+                }
+            }
+            ↩ "none"
+        }
+        // Normal copy mode keys
+        ⌥ byte {
+            47 => {
+                // '/' — enter search
+                cm.search_active = true;
                 cm.search_query = "";
                 cm.search_matches = [];
                 cm.search_current = -1;
-                cm.cursor_row = cm.search_saved_row;
-                cm.cursor_col = cm.search_saved_col;
-                cm.viewport_row = cm.search_saved_viewport;
+                cm.search_saved_row = cm.cursor_row;
+                cm.search_saved_col = cm.cursor_col;
+                cm.search_saved_viewport = cm.viewport_row;
                 ↩ "copy_render"
-            } ⎉ { ⎇ byte == 13 {
-                // Enter: accept search, keep position
-                cm.search_active = false;
-                ↩ "copy_render"
-            } ⎉ { ⎇ byte == 127 ∨ byte == 8 {
-                // Backspace: remove last char
-                ⎇ len(cm.search_query) > 0 {
-                    cm.search_query = substring(cm.search_query, 0, len(cm.search_query) - 1);
-                }
-                cm.search_matches = find_all_matches(cm.text_lines, cm.search_query);
-                cm.search_current = nearest_match(cm.search_matches, cm.cursor_row, "backward");
-                ⎇ cm.search_current >= 0 {
-                    cm.cursor_row = cm.search_matches[cm.search_current].row;
-                    cm.cursor_col = cm.search_matches[cm.search_current].col;
-                }
-                ↩ "copy_render"
-            } ⎉ { ⎇ byte == 14 {
-                // Ctrl-N: next match during search
+            }
+            110 => {
+                // 'n' — next match
                 ⎇ len(cm.search_matches) > 0 {
                     cm.search_current = (cm.search_current + 1) % len(cm.search_matches);
                     cm.cursor_row = cm.search_matches[cm.search_current].row;
                     cm.cursor_col = cm.search_matches[cm.search_current].col;
                 }
                 ↩ "copy_render"
-            } ⎉ { ⎇ byte == 16 {
-                // Ctrl-P: previous match during search
+            }
+            78 => {
+                // 'N' — previous match
                 ⎇ len(cm.search_matches) > 0 {
                     cm.search_current = cm.search_current - 1;
                     ⎇ cm.search_current < 0 { cm.search_current = len(cm.search_matches) - 1; }
@@ -2651,126 +2860,85 @@ rite process_input(input_state, byte, pane_count) {
                     cm.cursor_col = cm.search_matches[cm.search_current].col;
                 }
                 ↩ "copy_render"
-            } ⎉ { ⎇ byte >= 32 ∧ byte < 127 {
-                // Printable: append to query
-                cm.search_query = cm.search_query + from_char_code(byte);
-                cm.search_matches = find_all_matches(cm.text_lines, cm.search_query);
-                cm.search_current = nearest_match(cm.search_matches, cm.cursor_row, "backward");
-                ⎇ cm.search_current >= 0 {
-                    cm.cursor_row = cm.search_matches[cm.search_current].row;
-                    cm.cursor_col = cm.search_matches[cm.search_current].col;
+            }
+            104 => { copy_move_left(cm); ↩ "copy_render" }
+            106 => { copy_move_down(cm); ↩ "copy_render" }
+            107 => { copy_move_up(cm); ↩ "copy_render" }
+            108 => { copy_move_right(cm); ↩ "copy_render" }
+            48 => {
+                cm.cursor_col = 0;
+                ↩ "copy_render"
+            }
+            36 => {
+                ⎇ cm.cursor_row < len(cm.text_lines) {
+                    ≔ ll = len(cm.text_lines[cm.cursor_row]);
+                    ⎇ ll > 0 { cm.cursor_col = ll - 1; }
                 }
                 ↩ "copy_render"
-            } } } } } }
-            ↩ "none"
-        }
-        // Normal copy mode keys
-        ⎇ byte == 47 {
-            // '/' — enter search
-            cm.search_active = true;
-            cm.search_query = "";
-            cm.search_matches = [];
-            cm.search_current = -1;
-            cm.search_saved_row = cm.cursor_row;
-            cm.search_saved_col = cm.cursor_col;
-            cm.search_saved_viewport = cm.viewport_row;
-            ↩ "copy_render"
-        }
-        ⎇ byte == 110 {
-            // 'n' — next match
-            ⎇ len(cm.search_matches) > 0 {
-                cm.search_current = (cm.search_current + 1) % len(cm.search_matches);
-                cm.cursor_row = cm.search_matches[cm.search_current].row;
-                cm.cursor_col = cm.search_matches[cm.search_current].col;
             }
-            ↩ "copy_render"
-        }
-        ⎇ byte == 78 {
-            // 'N' — previous match
-            ⎇ len(cm.search_matches) > 0 {
-                cm.search_current = cm.search_current - 1;
-                ⎇ cm.search_current < 0 { cm.search_current = len(cm.search_matches) - 1; }
-                cm.cursor_row = cm.search_matches[cm.search_current].row;
-                cm.cursor_col = cm.search_matches[cm.search_current].col;
+            103 => {
+                cm.cursor_row = 0;
+                cm.cursor_col = 0;
+                ↩ "copy_render"
             }
-            ↩ "copy_render"
-        }
-        ⎇ byte == 104 { copy_move_left(cm); ↩ "copy_render" }
-        ⎇ byte == 106 { copy_move_down(cm); ↩ "copy_render" }
-        ⎇ byte == 107 { copy_move_up(cm); ↩ "copy_render" }
-        ⎇ byte == 108 { copy_move_right(cm); ↩ "copy_render" }
-        ⎇ byte == 48 {
-            cm.cursor_col = 0;
-            ↩ "copy_render"
-        }
-        ⎇ byte == 36 {
-            ⎇ cm.cursor_row < len(cm.text_lines) {
-                ≔ ll = len(cm.text_lines[cm.cursor_row]);
-                ⎇ ll > 0 { cm.cursor_col = ll - 1; }
-            }
-            ↩ "copy_render"
-        }
-        ⎇ byte == 103 {
-            cm.cursor_row = 0;
-            cm.cursor_col = 0;
-            ↩ "copy_render"
-        }
-        ⎇ byte == 71 {
-            cm.cursor_row = len(cm.text_lines) - 1;
-            cm.cursor_col = 0;
-            ↩ "copy_render"
-        }
-        ⎇ byte == 21 {
-            ≔ mut half = (cm.cursor_row - cm.viewport_row) / 2;
-            ⎇ half < 1 { half = 5; }
-            cm.cursor_row = cm.cursor_row - half;
-            ⎇ cm.cursor_row < 0 { cm.cursor_row = 0; }
-            copy_clamp_col(cm);
-            ↩ "copy_render"
-        }
-        ⎇ byte == 4 {
-            ≔ mut half = (len(cm.text_lines) - cm.viewport_row) / 2;
-            ⎇ half < 1 { half = 5; }
-            cm.cursor_row = cm.cursor_row + half;
-            ⎇ cm.cursor_row >= len(cm.text_lines) {
+            71 => {
                 cm.cursor_row = len(cm.text_lines) - 1;
-            }
-            copy_clamp_col(cm);
-            ↩ "copy_render"
-        }
-        ⎇ byte == 119 { copy_word_forward(cm); ↩ "copy_render" }
-        ⎇ byte == 98  { copy_word_backward(cm); ↩ "copy_render" }
-        ⎇ byte == 32 {
-            ⎇ cm.selecting == true {
-                cm.selecting = false;
-            } ⎉ {
-                cm.selecting = true;
-                cm.select_start_row = cm.cursor_row;
-                cm.select_start_col = cm.cursor_col;
-            }
-            ↩ "copy_render"
-        }
-        ⎇ byte == 86 {
-            cm.line_mode = cm.line_mode == false;
-            ⎇ cm.line_mode == true ∧ cm.selecting == false {
-                cm.selecting = true;
-                cm.select_start_row = cm.cursor_row;
-                cm.select_start_col = 0;
-            } ⎉ {
-                ⎇ cm.line_mode == true ∧ cm.selecting == true {
-                    cm.select_start_col = 0;
-                }
-            }
-            ↩ "copy_render"
-        }
-        ⎇ byte == 13  { ↩ "copy_yank" }
-        ⎇ byte == 113 { ↩ "copy_exit" }
-        ⎇ byte == 27  {
-            ⎇ cm.selecting == true {
-                cm.selecting = false;
+                cm.cursor_col = 0;
                 ↩ "copy_render"
             }
-            ↩ "copy_exit"
+            21 => {
+                ≔ mut half = (cm.cursor_row - cm.viewport_row) / 2;
+                ⎇ half < 1 { half = 5; }
+                cm.cursor_row = cm.cursor_row - half;
+                ⎇ cm.cursor_row < 0 { cm.cursor_row = 0; }
+                copy_clamp_col(cm);
+                ↩ "copy_render"
+            }
+            4 => {
+                ≔ mut half = (len(cm.text_lines) - cm.viewport_row) / 2;
+                ⎇ half < 1 { half = 5; }
+                cm.cursor_row = cm.cursor_row + half;
+                ⎇ cm.cursor_row >= len(cm.text_lines) {
+                    cm.cursor_row = len(cm.text_lines) - 1;
+                }
+                copy_clamp_col(cm);
+                ↩ "copy_render"
+            }
+            119 => { copy_word_forward(cm); ↩ "copy_render" }
+            98 => { copy_word_backward(cm); ↩ "copy_render" }
+            32 => {
+                ⎇ cm.selecting == true {
+                    cm.selecting = false;
+                } ⎉ {
+                    cm.selecting = true;
+                    cm.select_start_row = cm.cursor_row;
+                    cm.select_start_col = cm.cursor_col;
+                }
+                ↩ "copy_render"
+            }
+            86 => {
+                cm.line_mode = cm.line_mode == false;
+                ⎇ cm.line_mode == true ∧ cm.selecting == false {
+                    cm.selecting = true;
+                    cm.select_start_row = cm.cursor_row;
+                    cm.select_start_col = 0;
+                } ⎉ {
+                    ⎇ cm.line_mode == true ∧ cm.selecting == true {
+                        cm.select_start_col = 0;
+                    }
+                }
+                ↩ "copy_render"
+            }
+            13 => { ↩ "copy_yank" }
+            113 => { ↩ "copy_exit" }
+            27 => {
+                ⎇ cm.selecting == true {
+                    cm.selecting = false;
+                    ↩ "copy_render"
+                }
+                ↩ "copy_exit"
+            }
+            _ => {}
         }
         ↩ "none"
     }
@@ -2793,6 +2961,12 @@ rite process_input(input_state, byte, pane_count) {
     ⎇ input_state.showing_help == true {
         input_state.showing_help = false;
         ↩ "help_dismiss"
+    }
+
+    // Tasks overlay dismiss — any key dismisses
+    ⎇ input_state.showing_tasks == true {
+        input_state.showing_tasks = false;
+        ↩ "tasks_dismiss"
     }
 
     // Profile picker intercept — j/k navigate, Enter loads, Esc cancels
@@ -2871,6 +3045,7 @@ rite process_input(input_state, byte, pane_count) {
                 ⎇ byte == 60  { action = "pane_swap_prev"; }
                 ⎇ byte == 62  { action = "pane_swap_next"; }
                 ⎇ byte == 66  { action = "bcast_toggle"; }
+                ⎇ byte == 84  { action = "tasks_toggle"; }    // 'T' = 84
                 ⎇ byte == input_state.bindings.zoom_toggle   { action = "zoom_toggle"; }
                 ⎇ byte == input_state.bindings.save_profile  { action = "save_named_profile"; }
                 ⎇ byte == input_state.bindings.copy_mode     { action = "copy_enter"; }
@@ -3072,14 +3247,14 @@ rite monitor_render(vt, info, panes) {
     }
 
     // Header
-    vterm_feed(vt, " Claude Code Monitor\n");
-    vterm_feed(vt, sep + "\n");
+    vt.feed(" Claude Code Monitor\n");
+    vt.feed(sep + "\n");
 
     // Git branch
     ⎇ info.git_branch != "" {
-        vterm_feed(vt, " Branch: " + info.git_branch + "\n");
+        vt.feed(" Branch: " + info.git_branch + "\n");
     } ⎉ {
-        vterm_feed(vt, " Branch: (none)\n");
+        vt.feed(" Branch: (none)\n");
     }
 
     // Current task
@@ -3090,13 +3265,13 @@ rite monitor_render(vt, info, panes) {
         ⎇ len(task_str) > max_task {
             task_str = substring(task_str, 0, max_task) + "…";
         }
-        vterm_feed(vt, " Task:   " + task_str + "\n");
+        vt.feed(" Task:   " + task_str + "\n");
     }
 
-    vterm_feed(vt, "\n");
+    vt.feed("\n");
 
     ⎇ info.stats == null {
-        vterm_feed(vt, " No claude stats available\n");
+        vt.feed(" No claude stats available\n");
     } ⎉ {
         ≔ stats = info.stats;
 
@@ -3112,15 +3287,15 @@ rite monitor_render(vt, info, panes) {
             msgs_str = format_number(tm);
         }
 
-        vterm_feed(vt, " Sessions: " + sessions_str + "\n");
-        vterm_feed(vt, " Messages: " + msgs_str + "\n");
-        vterm_feed(vt, "\n");
+        vt.feed(" Sessions: " + sessions_str + "\n");
+        vt.feed(" Messages: " + msgs_str + "\n");
+        vt.feed("\n");
 
         // Model usage
         ≔ mu = map_get(stats, "modelUsage");
         ⎇ mu != null {
-            vterm_feed(vt, " Model Usage\n");
-            vterm_feed(vt, sep + "\n");
+            vt.feed(" Model Usage\n");
+            vt.feed(sep + "\n");
             ≔ model_keys = map_keys(mu);
             ≔ mut mi = 0;
             ⟳ mi < len(model_keys) {
@@ -3132,7 +3307,7 @@ rite monitor_render(vt, info, panes) {
                     ≔ mut total_tok = 0;
                     ⎇ in_tok != null { total_tok = total_tok + in_tok; }
                     ⎇ out_tok != null { total_tok = total_tok + out_tok; }
-                    vterm_feed(vt, " " + model_name + " " + format_number(total_tok) + "\n");
+                    vt.feed(" " + model_name + " " + format_number(total_tok) + "\n");
                 }
                 mi = mi + 1;
             }
@@ -3148,8 +3323,24 @@ rite monitor_render(vt, info, panes) {
         }
         mqpi = mqpi + 1;
     }
-    vterm_feed(vt, "\n");
-    vterm_feed(vt, " MQ  " + to_string(n_claude_panes) + " Claude  " + mq_socket_path() + "\n");
+    vt.feed("\n");
+    vt.feed(" MQ  " + to_string(n_claude_panes) + " Claude  " + mq_socket_path() + "\n");
+
+    // Task queue section
+    ≔ tq_mon = task_load();
+    ⎇ len(tq_mon) > 0 {
+        ≔ mut tq_p = 0; ≔ mut tq_d = 0; ≔ mut tq_done = 0;
+        ≔ mut tqi = 0;
+        ⟳ tqi < len(tq_mon) {
+            ≔ ts = map_get(tq_mon[tqi], "status");
+            ⎇ ts == "pending"    { tq_p    = tq_p    + 1; }
+            ⎇ ts == "dispatched" { tq_d    = tq_d    + 1; }
+            ⎇ ts == "done"       { tq_done = tq_done + 1; }
+            tqi = tqi + 1;
+        }
+        vt.feed(" Tasks  " + to_string(tq_p) + " pending  " +
+                       to_string(tq_d) + " active  " + to_string(tq_done) + " done\n");
+    }
 }
 
 // ============================================================================
@@ -3239,6 +3430,8 @@ rite main() {
 
     // Monitor refresh counter
     ≔ mut monitor_counter = 0;
+    // Tick counter for idle detection
+    ≔ mut tick_counter = 0;
 
     // Initial render
     i = 0;
@@ -3275,7 +3468,7 @@ rite main() {
                     ≔ saved = sess_data[ri];
                     ≔ saved_sb = map_get(saved, "scrollback");
                     ⎇ saved_sb != null ∧ len(saved_sb) > 0 {
-                        vterm_restore_scrollback(panes[ri].vterm, saved_sb);
+                        panes[ri].vterm.restore_scrollback(saved_sb);
                     }
                     ri = ri + 1;
                 }
@@ -3366,21 +3559,25 @@ rite main() {
                     ≔ byte = char_code_at(input_data, bi);
                     ≔ action = process_input(input, byte, len(panes));
 
-                    // Action dispatch: exactly ONE handler fires (⎇/⎉ chain)
-                    ⎇ action == "quit_request" {
+                    // Action dispatch
+                    ⌥ action {
+                    "quit_request" => {
                         input.confirming_quit = true;
                         render_status_bar_styled(screen, focus, panes, "confirm");
                         render_status_bar(screen, " Quit Morgoth? y/n");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "quit_confirm" {
+                    }
+                    "quit_confirm" => {
                         ⎇ cfg.session_restore == true {
                             save_session(panes);
                         }
                         running = false;
-                    } ⎉ { ⎇ action == "quit_cancel" {
+                    }
+                    "quit_cancel" => {
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "focus_next" {
+                    }
+                    "focus_next" => {
                         focus = (focus + 1) % len(panes);
                         ≔ mut pi = 0;
                         ⟳ pi < len(panes) {
@@ -3391,7 +3588,8 @@ rite main() {
                         }
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "focus_prev" {
+                    }
+                    "focus_prev" => {
                         ⎇ focus == 0 {
                             focus = len(panes) - 1;
                         } ⎉ {
@@ -3406,22 +3604,24 @@ rite main() {
                         }
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "scroll_up" {
+                    }
+                    "scroll_up" => {
                         ≔ vt = panes[focus].vterm;
                         ⎇ vt.scroll_offset < len(vt.scrollback) {
                             vt.scroll_offset = vt.scroll_offset + 1;
                         }
-                        vterm_blit(vt, screen, panes[focus].region);
+                        vt.blit(screen, panes[focus].region);
                         ≔ sb_title = "[" + to_string(focus + 1) + ":" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
                         ≔ sc = border_colors(panes[focus].pane_type, true);
                         render_border(screen, panes[focus].region, sb_title, sc.border_fg, sc.title_fg, true);
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "scroll_down" {
+                    }
+                    "scroll_down" => {
                         ≔ vt = panes[focus].vterm;
                         ⎇ vt.scroll_offset > 0 {
                             vt.scroll_offset = vt.scroll_offset - 1;
                         }
-                        vterm_blit(vt, screen, panes[focus].region);
+                        vt.blit(screen, panes[focus].region);
                         ≔ sc = border_colors(panes[focus].pane_type, true);
                         ⎇ vt.scroll_offset > 0 {
                             ≔ sb_title = "[" + to_string(focus + 1) + ":" + to_string(vt.scroll_offset) + "/" + to_string(len(vt.scrollback)) + "]";
@@ -3430,7 +3630,8 @@ rite main() {
                             render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), sc.border_fg, sc.title_fg, true);
                         }
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "passthrough" {
+                    }
+                    "passthrough" => {
                         ≔ ch = to_string(char_at(input_data, bi));
                         ⎇ input.bcast == true {
                             // Broadcast: write to all alive terminal panes
@@ -3446,50 +3647,14 @@ rite main() {
                                 Sys·write(panes[focus].master_fd, ch, 1);
                             }
                         }
-                    } ⎉ { ⎇ action == "forward_esc" {
+                    }
+                    "forward_esc" => {
                         ⎇ panes[focus].master_fd >= 0 {
                             ≔ esc_seq = from_char_code(27) + input.last_escape_buf;
                             Sys·write(panes[focus].master_fd, esc_seq, len(esc_seq));
                         }
-                    } ⎉ { ⎇ starts_with(action, "mouse:") == true {
-                        // Parse SGR mouse: action = "mouse:[<btn;col;rowM"
-                        ≔ mbuf = substring(action, 6, len(action));
-                        // Extract btn, col, row from "[<btn;col;rowM/m"
-                        ≔ mterm = to_string(char_at(mbuf, len(mbuf) - 1));
-                        ≔ mbody = substring(mbuf, 2, len(mbuf) - 1);
-                        ≔ mparts = split(mbody, ";");
-                        ⎇ len(mparts) >= 3 {
-                            ≔ mbtn = to_int(mparts[0]);
-                            ≔ mcol = to_int(mparts[1]) - 1;
-                            ≔ mrow = to_int(mparts[2]) - 1;
-                            // Button 0 press (mterm == "M"): change focus
-                            ⎇ mbtn == 0 ∧ mterm == "M" {
-                                ≔ clicked = find_pane_at(panes, mcol, mrow);
-                                ⎇ clicked >= 0 ∧ clicked != focus {
-                                    focus = clicked;
-                                    ≔ mut mpi = 0;
-                                    ⟳ mpi < len(panes) {
-                                        ≔ mt = pane_title(panes[mpi], mpi, focus);
-                                        ≔ mtc = border_colors(panes[mpi].pane_type, mpi == focus);
-                                        render_border(screen, panes[mpi].region, mt, mtc.border_fg, mtc.title_fg, mpi == focus);
-                                        mpi = mpi + 1;
-                                    }
-                                    render_status_bar_styled(screen, focus, panes, "normal");
-                                    flush_dirty(screen);
-                                }
-                                // Forward click to child PTY only if child has mouse tracking enabled
-                                ⎇ panes[focus].master_fd >= 0 ∧ panes[focus].vterm.mouse_mode > 0 {
-                                    ≔ mr = panes[focus].region;
-                                    ≔ icol = mcol - mr.x - 1;
-                                    ≔ irow = mrow - mr.y - 1;
-                                    ⎇ icol >= 0 ∧ icol < mr.w - 2 ∧ irow >= 0 ∧ irow < mr.h - 2 {
-                                        ≔ fwd = from_char_code(27) + "[<" + to_string(mbtn) + ";" + to_string(icol + 1) + ";" + to_string(irow + 1) + mterm;
-                                        Sys·write(panes[focus].master_fd, fwd, len(fwd));
-                                    }
-                                }
-                            }
-                        }
-                    } ⎉ { ⎇ action == "create_terminal" {
+                    }
+                    "create_terminal" => {
                         ⎇ len(panes) < cfg.max_panes {
                             ≔ tmp_region = Region·new(0, 0, 40, 12);
                             push(panes, Pane·new(tmp_region, cfg.shell));
@@ -3505,7 +3670,8 @@ rite main() {
                             render_status_bar(screen, " Max panes (" + to_string(cfg.max_panes) + ") reached");
                             flush_dirty(screen);
                         }
-                    } ⎉ { ⎇ action == "create_monitor" {
+                    }
+                    "create_monitor" => {
                         ⎇ len(panes) < cfg.max_panes {
                             ≔ tmp_region = Region·new(0, 0, 40, 12);
                             push(panes, MonitorPane·new(tmp_region));
@@ -3521,7 +3687,8 @@ rite main() {
                             render_status_bar(screen, " Max panes (" + to_string(cfg.max_panes) + ") reached");
                             flush_dirty(screen);
                         }
-                    } ⎉ { ⎇ action == "close_pane" {
+                    }
+                    "close_pane" => {
                         ⎇ len(panes) > 1 {
                             input.confirming_close = true;
                             render_status_bar_styled(screen, focus, panes, "confirm");
@@ -3531,7 +3698,8 @@ rite main() {
                             render_status_bar(screen, " Last pane. ^B+q to quit.");
                             flush_dirty(screen);
                         }
-                    } ⎉ { ⎇ action == "close_confirm" {
+                    }
+                    "close_confirm" => {
                         // Kill the focused pane's process and close fds
                         ⎇ panes[focus].alive == true {
                             Sys·kill(panes[focus].pid, SIGTERM());
@@ -3567,10 +3735,12 @@ rite main() {
                         zoomed = false;
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "close_cancel" {
+                    }
+                    "close_cancel" => {
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "split_vertical" {
+                    }
+                    "split_vertical" => {
                         // Add terminal; force same rows, +1 col (Phase 21)
                         ⎇ len(panes) < cfg.max_panes {
                             ≔ cur_rows = grid_rows;
@@ -3594,7 +3764,8 @@ rite main() {
                             render_status_bar(screen, " Max panes (" + to_string(cfg.max_panes) + ") reached");
                             flush_dirty(screen);
                         }
-                    } ⎉ { ⎇ action == "split_horizontal" {
+                    }
+                    "split_horizontal" => {
                         // Add terminal; force +1 row, same cols (Phase 21)
                         ⎇ len(panes) < cfg.max_panes {
                             ≔ cur_rows = grid_rows;
@@ -3618,7 +3789,8 @@ rite main() {
                             render_status_bar(screen, " Max panes (" + to_string(cfg.max_panes) + ") reached");
                             flush_dirty(screen);
                         }
-                    } ⎉ { ⎇ action == "pane_swap_prev" {
+                    }
+                    "pane_swap_prev" => {
                         // Swap focused pane with previous; inline — array slot swap only
                         // works in same scope as the panes declaration (Phase 26)
                         ⎇ len(panes) > 1 {
@@ -3630,7 +3802,8 @@ rite main() {
                             screen = Grid·new(screen_h, screen_w);
                             relayout_panes(panes, screen_w, screen_h, screen, focus);
                         }
-                    } ⎉ { ⎇ action == "pane_swap_next" {
+                    }
+                    "pane_swap_next" => {
                         // Swap focused pane with next; inline — same reason as above
                         ⎇ len(panes) > 1 {
                             ≔ next_i = (focus + 1) % len(panes);
@@ -3641,13 +3814,15 @@ rite main() {
                             screen = Grid·new(screen_h, screen_w);
                             relayout_panes(panes, screen_w, screen_h, screen, focus);
                         }
-                    } ⎉ { ⎇ action == "bcast_toggle" {
+                    }
+                    "bcast_toggle" => {
                         // Toggle bcast mode: keystrokes go to all alive terminal panes (Phase 26)
                         input.bcast = input.bcast == false;
                         render_status_bar_styled(screen, focus, panes, "normal");
                         ⎇ input.bcast == true { render_bcast_pill(screen); }
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "zoom_toggle" {
+                    }
+                    "zoom_toggle" => {
                         ⎇ zoomed == true {
                             // Unzoom: relayout all panes
                             zoomed = false;
@@ -3662,19 +3837,20 @@ rite main() {
                             zoomed = true;
                             ≔ zoom_region = Region·new(0, 0, screen_w, screen_h - 1);
                             panes[focus].region = zoom_region;
-                            vterm_resize(panes[focus].vterm, screen_h - 3, screen_w - 2);
+                            panes[focus].vterm.resize(screen_h - 3, screen_w - 2);
                             ⎇ panes[focus].alive == true {
                                 Pty·set_size(panes[focus].master_fd, screen_h - 3, screen_w - 2);
                             }
                             screen = Grid·new(screen_h, screen_w);
-                            vterm_blit(panes[focus].vterm, screen, panes[focus].region);
+                            panes[focus].vterm.blit(screen, panes[focus].region);
                             ≔ zt = "[" + to_string(focus + 1) + ":" + panes[focus].title + " (zoom)]";
                             ≔ zc = border_colors(panes[focus].pane_type, true);
                             render_border(screen, panes[focus].region, zt, zc.border_fg, zc.title_fg, true);
                             render_status_bar_styled(screen, focus, panes, "normal");
                             flush_dirty(screen);
                         }
-                    } ⎉ { ⎇ action == "copy_enter" {
+                    }
+                    "copy_enter" => {
                         ≔ cm = input.copy_mode;
                         cm.text_lines = extract_text_lines(panes[focus].vterm);
                         cm.active = true;
@@ -3689,7 +3865,8 @@ rite main() {
                         render_border(screen, panes[focus].region, "[" + to_string(focus + 1) + ":COPY]", cc.border_fg, cc.title_fg, true);
                         render_status_bar_styled(screen, focus, panes, "copy");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "copy_render" {
+                    }
+                    "copy_render" => {
                         ≔ cm = input.copy_mode;
                         ≔ inner_h = panes[focus].region.h - 2;
                         copy_adjust_viewport(cm, inner_h);
@@ -3704,7 +3881,8 @@ rite main() {
                             render_status_bar_styled(screen, focus, panes, "copy");
                         }
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "copy_yank" {
+                    }
+                    "copy_yank" => {
                         ≔ cm = input.copy_mode;
                         ≔ mut yank_msg = "";
                         ⎇ cm.selecting == true {
@@ -3721,7 +3899,7 @@ rite main() {
                         cm.active = false;
                         cm.text_lines = [];
                         // Flush: blit current vterm state
-                        vterm_blit(panes[focus].vterm, screen, panes[focus].region);
+                        panes[focus].vterm.blit(screen, panes[focus].region);
                         ≔ yc = border_colors(panes[focus].pane_type, true);
                         render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), yc.border_fg, yc.title_fg, true);
                         ⎇ yank_msg != "" {
@@ -3730,21 +3908,24 @@ rite main() {
                             render_status_bar_styled(screen, focus, panes, "normal");
                         }
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "copy_exit" {
+                    }
+                    "copy_exit" => {
                         ≔ cm = input.copy_mode;
                         cm.active = false;
                         cm.text_lines = [];
                         // Flush: blit current vterm state
-                        vterm_blit(panes[focus].vterm, screen, panes[focus].region);
+                        panes[focus].vterm.blit(screen, panes[focus].region);
                         ≔ exc = border_colors(panes[focus].pane_type, true);
                         render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), exc.border_fg, exc.title_fg, true);
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "save_named_profile" {
+                    }
+                    "save_named_profile" => {
                         save_named_profile(input.active_profile, panes);
                         render_status_bar(screen, " Profile '" + input.active_profile + "' saved");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "profile_picker_open" {
+                    }
+                    "profile_picker_open" => {
                         input.picker_profiles = list_profiles();
                         input.picker_selected = 0;
                         // Set selected to current active_profile if found
@@ -3759,11 +3940,13 @@ rite main() {
                         render_profile_picker(screen, panes[focus].region, input.picker_profiles, input.picker_selected);
                         render_border(screen, panes[focus].region, "[PROFILES]", 14, 15, true);
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "picker_move" {
+                    }
+                    "picker_move" => {
                         render_profile_picker(screen, panes[focus].region, input.picker_profiles, input.picker_selected);
                         render_border(screen, panes[focus].region, "[PROFILES]", 14, 15, true);
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "picker_load" {
+                    }
+                    "picker_load" => {
                         input.showing_picker = false;
                         ≔ sel_name = input.picker_profiles[input.picker_selected];
                         input.active_profile = sel_name;
@@ -3796,13 +3979,15 @@ rite main() {
                         }
                         render_status_bar(screen, " Loaded profile '" + sel_name + "'");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "picker_close" {
-                        vterm_blit(panes[focus].vterm, screen, panes[focus].region);
+                    }
+                    "picker_close" => {
+                        panes[focus].vterm.blit(screen, panes[focus].region);
                         ≔ pcc = border_colors(panes[focus].pane_type, true);
                         render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), pcc.border_fg, pcc.title_fg, true);
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "search_enter" {
+                    }
+                    "search_enter" => {
                         ≔ cm = input.copy_mode;
                         cm.text_lines = extract_text_lines(panes[focus].vterm);
                         cm.active = true;
@@ -3827,56 +4012,121 @@ rite main() {
                         render_border(screen, panes[focus].region, se_title, sec.border_fg, sec.title_fg, true);
                         render_status_bar_styled(screen, focus, panes, "search");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "help_toggle" {
+                    }
+                    "help_toggle" => {
                         input.showing_help = true;
                         render_help_overlay(screen, panes[focus].region);
                         ≔ hc = border_colors(panes[focus].pane_type, true);
                         render_border(screen, panes[focus].region, "[HELP]", hc.border_fg, hc.title_fg, true);
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "help_dismiss" {
-                        vterm_blit(panes[focus].vterm, screen, panes[focus].region);
+                    }
+                    "help_dismiss" => {
+                        panes[focus].vterm.blit(screen, panes[focus].region);
                         ≔ hdc = border_colors(panes[focus].pane_type, true);
                         render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), hdc.border_fg, hdc.title_fg, true);
                         render_status_bar_styled(screen, focus, panes, "normal");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "passthrough_leader" {
+                    }
+                    "tasks_toggle" => {
+                        input.showing_tasks = true;
+                        ≔ tq = task_load();
+                        render_task_overlay(screen, panes[focus].region, tq);
+                        ≔ tc2 = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, "[TASKS]", tc2.border_fg, tc2.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "normal");
+                        flush_dirty(screen);
+                    }
+                    "tasks_dismiss" => {
+                        panes[focus].vterm.blit(screen, panes[focus].region);
+                        ≔ tdc = border_colors(panes[focus].pane_type, true);
+                        render_border(screen, panes[focus].region, pane_title(panes[focus], focus, focus), tdc.border_fg, tdc.title_fg, true);
+                        render_status_bar_styled(screen, focus, panes, "normal");
+                        flush_dirty(screen);
+                    }
+                    "passthrough_leader" => {
                         ⎇ panes[focus].master_fd >= 0 {
                             ≔ lch = from_char_code(input.leader_key);
                             Sys·write(panes[focus].master_fd, lch, 1);
                         }
-                    } ⎉ { ⎇ action == "leader_activate" {
+                    }
+                    "leader_activate" => {
                         render_status_bar_styled(screen, focus, panes, "leader");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ action == "unknown_leader" {
+                    }
+                    "unknown_leader" => {
                         render_status_bar(screen, " Unknown key. ^B+? for help.");
                         flush_dirty(screen);
-                    } ⎉ { ⎇ starts_with(action, "focus_") == true ∧ len(action) > 6 {
-                        // Direct pane focus: focus_1 through focus_9
-                        ≔ digit_str = substring(action, 6, len(action));
-                        ≔ mut new_focus = -1;
-                        ⎇ digit_str == "1" { new_focus = 0; }
-                        ⎇ digit_str == "2" { new_focus = 1; }
-                        ⎇ digit_str == "3" { new_focus = 2; }
-                        ⎇ digit_str == "4" { new_focus = 3; }
-                        ⎇ digit_str == "5" { new_focus = 4; }
-                        ⎇ digit_str == "6" { new_focus = 5; }
-                        ⎇ digit_str == "7" { new_focus = 6; }
-                        ⎇ digit_str == "8" { new_focus = 7; }
-                        ⎇ digit_str == "9" { new_focus = 8; }
-                        ⎇ new_focus >= 0 ∧ new_focus < len(panes) {
-                            focus = new_focus;
-                            ≔ mut dpi = 0;
-                            ⟳ dpi < len(panes) {
-                                ≔ dt = pane_title(panes[dpi], dpi, focus);
-                                ≔ dtc = border_colors(panes[dpi].pane_type, dpi == focus);
-                                render_border(screen, panes[dpi].region, dt, dtc.border_fg, dtc.title_fg, dpi == focus);
-                                dpi = dpi + 1;
+                    }
+                    "none" => {}
+                    _ => {
+                        ⎇ starts_with(action, "mouse:") == true {
+                            // Parse SGR mouse: action = "mouse:[<btn;col;rowM"
+                            ≔ mbuf = substring(action, 6, len(action));
+                            // Extract btn, col, row from "[<btn;col;rowM/m"
+                            ≔ mterm = to_string(char_at(mbuf, len(mbuf) - 1));
+                            ≔ mbody = substring(mbuf, 2, len(mbuf) - 1);
+                            ≔ mparts = split(mbody, ";");
+                            ⎇ len(mparts) >= 3 {
+                                ≔ mbtn = to_int(mparts[0]);
+                                ≔ mcol = to_int(mparts[1]) - 1;
+                                ≔ mrow = to_int(mparts[2]) - 1;
+                                // Button 0 press (mterm == "M"): change focus
+                                ⎇ mbtn == 0 ∧ mterm == "M" {
+                                    ≔ clicked = find_pane_at(panes, mcol, mrow);
+                                    ⎇ clicked >= 0 ∧ clicked != focus {
+                                        focus = clicked;
+                                        ≔ mut mpi = 0;
+                                        ⟳ mpi < len(panes) {
+                                            ≔ mt = pane_title(panes[mpi], mpi, focus);
+                                            ≔ mtc = border_colors(panes[mpi].pane_type, mpi == focus);
+                                            render_border(screen, panes[mpi].region, mt, mtc.border_fg, mtc.title_fg, mpi == focus);
+                                            mpi = mpi + 1;
+                                        }
+                                        render_status_bar_styled(screen, focus, panes, "normal");
+                                        flush_dirty(screen);
+                                    }
+                                    // Forward click to child PTY only if child has mouse tracking enabled
+                                    ⎇ panes[focus].master_fd >= 0 ∧ panes[focus].vterm.mouse_mode > 0 {
+                                        ≔ mr = panes[focus].region;
+                                        ≔ icol = mcol - mr.x - 1;
+                                        ≔ irow = mrow - mr.y - 1;
+                                        ⎇ icol >= 0 ∧ icol < mr.w - 2 ∧ irow >= 0 ∧ irow < mr.h - 2 {
+                                            ≔ fwd = from_char_code(27) + "[<" + to_string(mbtn) + ";" + to_string(icol + 1) + ";" + to_string(irow + 1) + mterm;
+                                            Sys·write(panes[focus].master_fd, fwd, len(fwd));
+                                        }
+                                    }
+                                }
                             }
-                            render_status_bar_styled(screen, focus, panes, "normal");
-                            flush_dirty(screen);
                         }
-                    } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } }
+                        ⎇ starts_with(action, "focus_") == true ∧ len(action) > 6 {
+                            // Direct pane focus: focus_1 through focus_9
+                            ≔ digit_str = substring(action, 6, len(action));
+                            ≔ mut new_focus = -1;
+                            ⎇ digit_str == "1" { new_focus = 0; }
+                            ⎇ digit_str == "2" { new_focus = 1; }
+                            ⎇ digit_str == "3" { new_focus = 2; }
+                            ⎇ digit_str == "4" { new_focus = 3; }
+                            ⎇ digit_str == "5" { new_focus = 4; }
+                            ⎇ digit_str == "6" { new_focus = 5; }
+                            ⎇ digit_str == "7" { new_focus = 6; }
+                            ⎇ digit_str == "8" { new_focus = 7; }
+                            ⎇ digit_str == "9" { new_focus = 8; }
+                            ⎇ new_focus >= 0 ∧ new_focus < len(panes) {
+                                focus = new_focus;
+                                ≔ mut dpi = 0;
+                                ⟳ dpi < len(panes) {
+                                    ≔ dt = pane_title(panes[dpi], dpi, focus);
+                                    ≔ dtc = border_colors(panes[dpi].pane_type, dpi == focus);
+                                    render_border(screen, panes[dpi].region, dt, dtc.border_fg, dtc.title_fg, dpi == focus);
+                                    dpi = dpi + 1;
+                                }
+                                render_status_bar_styled(screen, focus, panes, "normal");
+                                flush_dirty(screen);
+                            }
+                        }
+                    }
+                    }
 
                     bi = bi + 1;
                 }
@@ -3896,7 +4146,7 @@ rite main() {
                     ⎇ Sys·poll_fd(panes[pane_i].master_fd, 0) == true {
                         ≔ chunk = Sys·read_string(panes[pane_i].master_fd, PTY_READ_CHUNK);
                         ⎇ chunk != "" {
-                            vterm_feed(panes[pane_i].vterm, chunk);
+                            panes[pane_i].vterm.feed(chunk);
                             pty_total = pty_total + len(chunk);
                         } ⎉ {
                             pty_done = true;
@@ -3907,6 +4157,7 @@ rite main() {
                 }
                 ⎇ pty_total > 0 {
                     had_activity = true;
+                    panes[pane_i].last_pty_tick = tick_counter;
                     // Update pane title from VTerm if set by OSC
                     ⎇ panes[pane_i].vterm.title != "" {
                         panes[pane_i].title = sanitize_title(panes[pane_i].vterm.title);
@@ -3916,7 +4167,7 @@ rite main() {
                     }
                     // Only render if not zoomed or this is the focused pane, and not in copy mode for focused
                     ⎇ (zoomed == false ∨ pane_i == focus) ∧ (input.copy_mode.active == false ∨ pane_i != focus) {
-                        vterm_blit(panes[pane_i].vterm, screen, panes[pane_i].region);
+                        panes[pane_i].vterm.blit(screen, panes[pane_i].region);
                         ≔ mut bt = pane_title(panes[pane_i], pane_i, focus);
                         ⎇ pane_i == focus ∧ zoomed == true {
                             bt = "[" + to_string(pane_i + 1) + ":" + panes[pane_i].title + " (zoom)]";
@@ -3938,6 +4189,24 @@ rite main() {
                 ⎇ wait.pid > 0 {
                     panes[di].alive = false;
                     panes[di].title = "[exited " + to_string(wait.status) + "]";
+                    // If pane had a task, reset it to pending so it can be redispatched
+                    ⎇ panes[di].current_task_id != null {
+                        ≔ mut dead_tq = task_load();
+                        ≔ dead_tid = panes[di].current_task_id;
+                        ≔ mut dtqi = 0;
+                        ⟳ dtqi < len(dead_tq) {
+                            ⎇ map_get(dead_tq[dtqi], "id") == dead_tid {
+                                ≔ dtxt = map_get(dead_tq[dtqi], "text");
+                                ≔ dcts = map_get(dead_tq[dtqi], "created_ts");
+                                dead_tq[dtqi] = { id: dead_tid, text: dtxt,
+                                                  status: "pending", pane_id: null,
+                                                  created_ts: dcts, done_ts: null };
+                            }
+                            dtqi = dtqi + 1;
+                        }
+                        task_save(dead_tq);
+                        panes[di].current_task_id = null;
+                    }
                     // Render dim border to indicate dead pane (fg 8)
                     ⎇ (zoomed == false ∨ di == focus) ∧ (input.copy_mode.active == false ∨ di != focus) {
                         ≔ dead_title = pane_title(panes[di], di, focus);
@@ -3981,7 +4250,15 @@ rite main() {
                     } ⎉ { ⎇ imsg.kind == "notify" {
                         render_status_bar(screen, " " + imsg.payload);
                         flush_dirty(screen);
-                    } }
+                    } ⎉ { ⎇ imsg.kind == "task_done_internal" {
+                        ≔ mut tdi = 0;
+                        ⟳ tdi < len(panes) {
+                            ⎇ panes[tdi].current_task_id == imsg.payload {
+                                panes[tdi].current_task_id = null;
+                            }
+                            tdi = tdi + 1;
+                        }
+                    } } }
                     imi = imi + 1;
                 }
                 panes[ii].inbox = [];
@@ -4000,7 +4277,7 @@ rite main() {
                     monitor_render(panes[mi].vterm, stats, panes);
                     // Only render if not zoomed or this is the focused pane, and not in copy mode for focused
                     ⎇ (zoomed == false ∨ mi == focus) ∧ (input.copy_mode.active == false ∨ mi != focus) {
-                        vterm_blit(panes[mi].vterm, screen, panes[mi].region);
+                        panes[mi].vterm.blit(screen, panes[mi].region);
                         ≔ mt = pane_title(panes[mi], mi, focus);
                         ≔ mc = border_colors(panes[mi].pane_type, mi == focus);
                         render_border(screen, panes[mi].region, mt, mc.border_fg, mc.title_fg, mi == focus);
@@ -4009,8 +4286,45 @@ rite main() {
                 }
                 mi = mi + 1;
             }
+            // Auto-dispatch: find pending task, find idle Claude pane, dispatch
+            ≔ mut tq_check = task_load();
+            ≔ t_pending = task_find_pending(tq_check);
+            ⎇ t_pending != null {
+                ≔ mut adpi = 0; ≔ mut target_pi = -1;
+                ⟳ adpi < len(panes) ∧ target_pi == -1 {
+                    ⎇ panes[adpi].pane_type == "terminal" ∧
+                      panes[adpi].role == "claude" ∧
+                      panes[adpi].alive == true ∧
+                      panes[adpi].current_task_id == null ∧
+                      tick_counter - panes[adpi].last_pty_tick >= IDLE_THRESHOLD {
+                        target_pi = adpi;
+                    }
+                    adpi = adpi + 1;
+                }
+                ⎇ target_pi >= 0 {
+                    ≔ tid   = map_get(t_pending, "id");
+                    ≔ ttext = map_get(t_pending, "text");
+                    Sys·write(panes[target_pi].master_fd, ttext, len(ttext));
+                    panes[target_pi].current_task_id = tid;
+                    // Inline mark_dispatched (array slot assignment requires same scope)
+                    ≔ mut mdi = 0;
+                    ⟳ mdi < len(tq_check) {
+                        ⎇ map_get(tq_check[mdi], "id") == tid {
+                            ≔ td_txt = map_get(tq_check[mdi], "text");
+                            ≔ td_cts = map_get(tq_check[mdi], "created_ts");
+                            tq_check[mdi] = { id: tid, text: td_txt, status: "dispatched",
+                                              pane_id: panes[target_pi].id,
+                                              created_ts: td_cts, done_ts: null };
+                        }
+                        mdi = mdi + 1;
+                    }
+                    task_save(tq_check);
+                    render_status_bar(screen, " Task dispatched to pane " + to_string(target_pi + 1));
+                    any_pane_rendered = true;
+                }
+            }
             // Refresh status bar on monitor tick to clear transient messages
-            ⎇ input.copy_mode.active == false ∧ input.confirming_close == false ∧ input.confirming_quit == false ∧ input.showing_help == false ∧ input.showing_picker == false {
+            ⎇ input.copy_mode.active == false ∧ input.confirming_close == false ∧ input.confirming_quit == false ∧ input.showing_help == false ∧ input.showing_picker == false ∧ input.showing_tasks == false {
                 render_status_bar_styled(screen, focus, panes, "normal");
                 ⎇ input.bcast == true { render_bcast_pill(screen); }
                 any_pane_rendered = true;
@@ -4040,6 +4354,7 @@ rite main() {
         // Track activity for next iteration's poll timeout
         // (poll_fds timeout replaces the per-iteration adaptive sleep)
         had_activity_prev = had_activity;
+        tick_counter = tick_counter + 1;
     }
 
     // Shutdown — close FIFOs and MQ socket

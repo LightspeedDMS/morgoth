@@ -1,0 +1,118 @@
+// P27_2709: render_task_overlay: header shows counts; pending/dispatched visible; done absent
+
+rite Cell·new(ch, fg, bg, dirty) {
+    { ch: ch, fg: fg, bg: bg, dirty: dirty }
+}
+
+rite Grid·new(rows, cols) {
+    ≔ total = rows * cols;
+    ≔ cells = [];
+    ≔ mut i = 0;
+    ⟳ i < total { push(cells, Cell·new(" ", 7, 0, true)); i = i + 1; }
+    { rows: rows, cols: cols, cells: cells }
+}
+
+rite Grid·set(grid, row, col, ch, fg, bg) {
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        ≔ c = grid.cells[idx];
+        ⎇ c.ch != ch ∨ c.fg != fg ∨ c.bg != bg {
+            grid.cells[idx] = Cell·new(ch, fg, bg, true);
+        }
+    }
+}
+
+rite Grid·get(grid, row, col) {
+    ≔ mut result = Cell·new(" ", 7, 0, false);
+    ⎇ row >= 0 ∧ row < grid.rows ∧ col >= 0 ∧ col < grid.cols {
+        ≔ idx = row * grid.cols + col;
+        result = grid.cells[idx];
+    }
+    result
+}
+
+// Read a row of text from grid at given row (inner coords)
+rite grid_row_text(grid, row, start_col, length) {
+    ≔ mut s = ""; ≔ mut c = 0;
+    ⟳ c < length {
+        s = s + Grid·get(grid, row, start_col + c).ch;
+        c = c + 1;
+    }
+    s
+}
+
+rite render_task_overlay(grid, region, tasks) {
+    ≔ inner_x = region.x + 1; ≔ inner_y = region.y + 1;
+    ≔ inner_w = region.w - 2; ≔ inner_h = region.h - 2;
+    ≔ mut r = 0;
+    ⟳ r < inner_h {
+        ≔ mut c = 0;
+        ⟳ c < inner_w { Grid·set(grid, inner_y + r, inner_x + c, " ", 7, 0); c = c + 1; }
+        r = r + 1;
+    }
+    ≔ mut n_p = 0; ≔ mut n_d = 0; ≔ mut n_done = 0; ≔ mut ci = 0;
+    ⟳ ci < len(tasks) {
+        ≔ s = map_get(tasks[ci], "status");
+        ⎇ s == "pending"    { n_p    = n_p    + 1; }
+        ⎇ s == "dispatched" { n_d    = n_d    + 1; }
+        ⎇ s == "done"       { n_done = n_done + 1; }
+        ci = ci + 1;
+    }
+    ≔ header = "-- Tasks: " + to_string(n_p) + " pending  " + to_string(n_d) +
+               " active  " + to_string(n_done) + " done  (any key=close) --";
+    ≔ mut hc = 0;
+    ⟳ hc < len(header) ∧ hc < inner_w {
+        Grid·set(grid, inner_y, inner_x + hc, to_string(char_at(header, hc)), 14, 0);
+        hc = hc + 1;
+    }
+    ≔ mut row = 1; ≔ mut ti = 0;
+    ⟳ ti < len(tasks) ∧ row < inner_h {
+        ≔ status = map_get(tasks[ti], "status");
+        ⎇ status != "done" {
+            ≔ mut glyph = ">"; ≔ mut fg = 15;
+            ⎇ status == "dispatched" { glyph = "~"; fg = 11; }
+            ≔ mut ttext = map_get(tasks[ti], "text");
+            ≔ max_t = inner_w - 2;
+            ⎇ len(ttext) > max_t { ttext = substring(ttext, 0, max_t - 1) + ">"; }
+            ≔ line = glyph + " " + ttext;
+            ≔ mut lc = 0;
+            ⟳ lc < len(line) ∧ lc < inner_w {
+                Grid·set(grid, inner_y + row, inner_x + lc, to_string(char_at(line, lc)), fg, 0);
+                lc = lc + 1;
+            }
+            row = row + 1;
+        }
+        ti = ti + 1;
+    }
+}
+
+rite main() {
+    ≔ grid = Grid·new(20, 60);
+    ≔ region = {x: 0, y: 0, w: 60, h: 20};
+
+    // Build tasks as raw JSON maps
+    ≔ raw = "[{\"id\":\"t1\",\"text\":\"Pending task A\",\"status\":\"pending\",\"pane_id\":null,\"created_ts\":\"ts\",\"done_ts\":null}," +
+             "{\"id\":\"t2\",\"text\":\"Active task B\",\"status\":\"dispatched\",\"pane_id\":\"p1\",\"created_ts\":\"ts\",\"done_ts\":null}," +
+             "{\"id\":\"t3\",\"text\":\"Done task C\",\"status\":\"done\",\"pane_id\":\"p2\",\"created_ts\":\"ts\",\"done_ts\":\"ts2\"}]";
+    ≔ tasks = json_parse(raw);
+
+    render_task_overlay(grid, region, tasks);
+
+    // Header row (inner_y=1, inner_x=1): check counts (1 pending, 1 active, 1 done)
+    ≔ header_text = grid_row_text(grid, 1, 1, 40);
+    println(contains(header_text, "1 pending"));    // true
+    println(contains(header_text, "1 active"));     // true
+    println(contains(header_text, "1 done"));       // true
+
+    // Row 2 (inner_y+1=2): pending task with ">" glyph
+    ≔ row2 = grid_row_text(grid, 2, 1, 20);
+    println(contains(row2, "> Pending task A")); // true
+
+    // Row 3 (inner_y+2=3): dispatched task with "~" glyph
+    ≔ row3 = grid_row_text(grid, 3, 1, 20);
+    println(contains(row3, "~ Active task B")); // true
+
+    // Row 4 (inner_y+3=4): done task should NOT be rendered — should be spaces
+    ≔ row4_first = Grid·get(grid, 4, 1).ch;
+    println(row4_first == " ");                  // true: done task absent
+}

@@ -1,0 +1,51 @@
+// P27_2707: task_add kind → task saved to file; notify pushed to pane[0].inbox
+
+rite task_queue_path() { env("HOME") + "/.morgoth/tasks_test_2707.json" }
+
+rite task_new(text) {
+    { id: uuid_v4(), text: text, status: "pending",
+      pane_id: null, created_ts: to_string(Sys·clock_gettime()), done_ts: null }
+}
+
+rite task_load() {
+    ≔ path = task_queue_path();
+    ⎇ fs_exists(path) == false { ↩ []; }
+    ≔ raw = fs_read(path);
+    ⎇ len(raw) == 0 ∨ starts_with(raw, "[") == false { ↩ []; }
+    ≔ parsed = json_parse(raw);
+    ⎇ type_of(parsed) != "array" ∧ type_of(parsed) != "list" { ↩ []; }
+    ↩ parsed
+}
+
+rite task_save(tasks) { fs_write(task_queue_path(), json_stringify(tasks)); }
+
+rite main() {
+    ⎇ fs_exists(task_queue_path()) == true { fs_remove(task_queue_path()); }
+
+    ≔ mut panes = [];
+    push(panes, {id: "pane-0", inbox: [], pane_type: "terminal"});
+
+    // Simulate task_add handling from mq_process_external
+    ≔ payload = "Add new feature Y";
+    ≔ new_task = task_new(payload);
+    ≔ mut atq = task_load();
+    push(atq, new_task);
+    task_save(atq);
+    ⎇ len(panes) > 0 {
+        push(panes[0].inbox, { kind: "notify", payload: "Task added: " + substring(payload, 0, 40) });
+    }
+
+    // Verify task file has the task
+    ≔ reloaded = task_load();
+    println(len(reloaded));                           // 1
+    println(map_get(reloaded[0], "status"));          // pending
+    println(map_get(reloaded[0], "text"));            // Add new feature Y
+
+    // Verify notify was pushed to pane inbox
+    println(len(panes[0].inbox));                     // 1
+    println(panes[0].inbox[0].kind);                  // notify
+    ≔ notify_msg = panes[0].inbox[0].payload;
+    println(starts_with(notify_msg, "Task added:"));  // true
+
+    fs_remove(task_queue_path());
+}

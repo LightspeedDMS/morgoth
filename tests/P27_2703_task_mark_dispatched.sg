@@ -1,0 +1,50 @@
+// P27_2703: inline mark_dispatched pattern (slot assignment in same scope)
+// Confirms array slot reassignment works when tasks is in-scope array
+
+rite task_queue_path() { env("HOME") + "/.morgoth/tasks_test_2703.json" }
+
+rite task_load() {
+    ≔ path = task_queue_path();
+    ⎇ fs_exists(path) == false { ↩ []; }
+    ≔ raw = fs_read(path);
+    ⎇ len(raw) == 0 ∨ starts_with(raw, "[") == false { ↩ []; }
+    ≔ parsed = json_parse(raw);
+    ⎇ type_of(parsed) != "array" ∧ type_of(parsed) != "list" { ↩ []; }
+    ↩ parsed
+}
+
+rite task_save(tasks) { fs_write(task_queue_path(), json_stringify(tasks)); }
+
+rite main() {
+    ⎇ fs_exists(task_queue_path()) == true { fs_remove(task_queue_path()); }
+
+    ≔ raw = "[{\"id\":\"t1\",\"text\":\"alpha\",\"status\":\"pending\",\"pane_id\":null,\"created_ts\":\"ts1\",\"done_ts\":null}," +
+             "{\"id\":\"t2\",\"text\":\"beta\",\"status\":\"pending\",\"pane_id\":null,\"created_ts\":\"ts2\",\"done_ts\":null}]";
+    fs_write(task_queue_path(), raw);
+    ≔ mut tasks = task_load();
+
+    // Inline mark_dispatched (same scope as tasks declaration)
+    ≔ task_id = "t1";
+    ≔ pane_id = "pane-abc";
+    ≔ mut mdi = 0;
+    ⟳ mdi < len(tasks) {
+        ⎇ map_get(tasks[mdi], "id") == task_id {
+            ≔ td_txt = map_get(tasks[mdi], "text");
+            ≔ td_cts = map_get(tasks[mdi], "created_ts");
+            tasks[mdi] = { id: task_id, text: td_txt, status: "dispatched",
+                           pane_id: pane_id, created_ts: td_cts, done_ts: null };
+        }
+        mdi = mdi + 1;
+    }
+    task_save(tasks);
+
+    // Verify via reload
+    ≔ reloaded = task_load();
+    println(map_get(reloaded[0], "status"));          // dispatched
+    println(map_get(reloaded[0], "pane_id"));         // pane-abc
+    println(map_get(reloaded[0], "text"));            // alpha
+    println(map_get(reloaded[1], "status"));          // pending
+    println(map_get(reloaded[1], "pane_id") == null); // true
+
+    fs_remove(task_queue_path());
+}

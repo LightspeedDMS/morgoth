@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# morgoth-task — manage the Morgoth agent task queue
+#
+# Usage:
+#   morgoth-task add TEXT       Add a new task (sends to socket, or edits file directly)
+#   morgoth-task list [--all]  List pending/active tasks (--all includes done)
+#   morgoth-task done ID-PREFIX Mark a task done by UUID prefix
+#
+# Dependencies: jq, nc (ncat recommended for Unix socket support)
+#
+# Examples:
+#   morgoth-task add "Refactor the login module"
+#   morgoth-task list
+#   morgoth-task list --all
+#   morgoth-task done abc12
+
+set -euo pipefail
+
+SOCKET="$HOME/.morgoth/morgoth.sock"
+TASKS_FILE="$HOME/.morgoth/tasks.json"
+
+_die() { echo "error: $*" >&2; exit 1; }
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+
+  add)
+    [[ $# -eq 0 ]] && _die "Usage: morgoth-task add TEXT"
+    TEXT="$*"
+    if [[ -S "$SOCKET" ]]; then
+      MSG=$(jq -n --arg p "$TEXT" '{kind: "task_add", payload: $p}')
+      echo "$MSG" | nc -U "$SOCKET"
+    else
+      # Fallback: direct file edit (Morgoth not running)
+      mkdir -p "$(dirname "$TASKS_FILE")"
+      if [[ ! -f "$TASKS_FILE" ]]; then echo "[]" > "$TASKS_FILE"; fi
+      NEW_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || date +%s%N)
+      NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      jq --arg id "$NEW_ID" --arg text "$TEXT" --arg ts "$NOW" \
+         '. + [{id: $id, text: $text, status: "pending", pane_id: null, created_ts: $ts, done_ts: null}]' \
+         "$TASKS_FILE" > "${TASKS_FILE}.tmp" && mv "${TASKS_FILE}.tmp" "$TASKS_FILE"
+      echo "Task added (offline): $TEXT"
+    fi
+    ;;
+
+  list)
+    [[ ! -f "$TASKS_FILE" ]] && { echo "(no tasks)"; exit 0; }
+    SHOW_ALL=false
+    [[ "${1:-}" == "--all" ]] && SHOW_ALL=true
+
+    if [[ "$SHOW_ALL" == "true" ]]; then
+      FILTER='.'
+    else
+      FILTER='.[] | select(.status != "done")'
+    fi
+
+    COUNT=$(jq "$FILTER" "$TASKS_FILE" 2>/dev/null | jq -s 'length')
+    if [[ "$COUNT" -eq 0 ]]; then
+      echo "(no tasks)"
+      exit 0
+    fi
+
+    jq -r "$FILTER | \"\(.id[0:8])  [\(.status)]  \(.text)\"" "$TASKS_FILE"
+    ;;
+
+  done)
+    [[ $# -eq 0 ]] && _die "Usage: morgoth-task done ID-PREFIX"
+    PREFIX="$1"
+    [[ ! -f "$TASKS_FILE" ]] && _die "No tasks file at $TASKS_FILE"
+    FULL_ID=$(jq -r --arg p "$PREFIX" '.[] | select(.id | startswith($p)) | .id' "$TASKS_FILE" | head -1)
+    [[ -z "$FULL_ID" ]] && _die "No task found with prefix '$PREFIX'"
+    if [[ -S "$SOCKET" ]]; then
+      MSG=$(jq -n --arg id "$FULL_ID" '{kind: "task_done", payload: $id}')
+      echo "$MSG" | nc -U "$SOCKET"
+    else
+      # Fallback: direct file edit
+      NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      jq --arg id "$FULL_ID" --arg ts "$NOW" \
+         'map(if .id == $id then .status = "done" | .done_ts = $ts else . end)' \
+         "$TASKS_FILE" > "${TASKS_FILE}.tmp" && mv "${TASKS_FILE}.tmp" "$TASKS_FILE"
+      echo "Task marked done: $FULL_ID"
+    fi
+    ;;
+
+  -h|--help|help|"")
+    head -20 "$0" | grep '^#' | sed 's/^# *//'
+    exit 0
+    ;;
+
+  *)
+    _die "Unknown subcommand '$cmd'. Use: add, list, done"
+    ;;
+
+esac

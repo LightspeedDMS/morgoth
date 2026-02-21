@@ -1,0 +1,16 @@
+// P27_2700: task_new creates a task with correct fields
+
+rite task_new(text) {
+    { id: uuid_v4(), text: text, status: "pending",
+      pane_id: null, created_ts: to_string(Sys·clock_gettime()), done_ts: null }
+}
+
+rite main() {
+    ≔ t = task_new("Fix the login bug");
+    println(len(t.id) > 0);          // true: id is non-empty
+    println(t.text);                  // Fix the login bug
+    println(t.status);                // pending
+    println(t.pane_id == null);       // true
+    println(len(t.created_ts) > 0);   // true: created_ts non-empty
+    println(t.done_ts == null);       // true
+}

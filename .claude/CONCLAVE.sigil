@@ -1,0 +1,4 @@
+# CONCLAVE — Active Agent Sessions
+# Format: agent_id | task | files/areas | status | timestamp
+
+claude-sonnet-4-6-phase27 | Phase 27: Agent Task Queue | morgoth.sg, bin/morgoth-task, tests/P27_* | completed | 2026-02-20

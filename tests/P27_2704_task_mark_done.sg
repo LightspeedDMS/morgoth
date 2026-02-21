@@ -1,0 +1,52 @@
+// P27_2704: inline mark_done pattern (slot assignment in same scope)
+// Confirms array slot reassignment + json roundtrip preserves done_ts
+
+rite task_queue_path() { env("HOME") + "/.morgoth/tasks_test_2704.json" }
+
+rite task_load() {
+    ≔ path = task_queue_path();
+    ⎇ fs_exists(path) == false { ↩ []; }
+    ≔ raw = fs_read(path);
+    ⎇ len(raw) == 0 ∨ starts_with(raw, "[") == false { ↩ []; }
+    ≔ parsed = json_parse(raw);
+    ⎇ type_of(parsed) != "array" ∧ type_of(parsed) != "list" { ↩ []; }
+    ↩ parsed
+}
+
+rite task_save(tasks) { fs_write(task_queue_path(), json_stringify(tasks)); }
+
+rite main() {
+    ⎇ fs_exists(task_queue_path()) == true { fs_remove(task_queue_path()); }
+
+    ≔ raw = "[{\"id\":\"t1\",\"text\":\"alpha\",\"status\":\"dispatched\",\"pane_id\":\"p1\",\"created_ts\":\"ts1\",\"done_ts\":null}," +
+             "{\"id\":\"t2\",\"text\":\"beta\",\"status\":\"pending\",\"pane_id\":null,\"created_ts\":\"ts2\",\"done_ts\":null}]";
+    fs_write(task_queue_path(), raw);
+    ≔ mut tasks = task_load();
+
+    // Inline mark_done (same scope as tasks declaration)
+    ≔ task_id = "t1";
+    ≔ mut tdi = 0;
+    ⟳ tdi < len(tasks) {
+        ⎇ map_get(tasks[tdi], "id") == task_id {
+            ≔ td_txt = map_get(tasks[tdi], "text");
+            ≔ td_pid = map_get(tasks[tdi], "pane_id");
+            ≔ td_cts = map_get(tasks[tdi], "created_ts");
+            tasks[tdi] = { id: task_id, text: td_txt,
+                           status: "done", pane_id: td_pid,
+                           created_ts: td_cts,
+                           done_ts: to_string(Sys·clock_gettime()) };
+        }
+        tdi = tdi + 1;
+    }
+    task_save(tasks);
+
+    // Verify via reload
+    ≔ reloaded = task_load();
+    println(map_get(reloaded[0], "status"));           // done
+    println(len(map_get(reloaded[0], "done_ts")) > 0); // true
+    println(map_get(reloaded[0], "pane_id"));          // p1
+    println(map_get(reloaded[1], "status"));           // pending
+    println(map_get(reloaded[1], "done_ts") == null);  // true
+
+    fs_remove(task_queue_path());
+}

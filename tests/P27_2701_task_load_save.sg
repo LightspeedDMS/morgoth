@@ -1,0 +1,42 @@
+// P27_2701: task_load/task_save roundtrip; reveals type_of guard value
+
+rite task_queue_path() { env("HOME") + "/.morgoth/tasks_test_2701.json" }
+
+rite task_new(text) {
+    { id: "id-" + text, text: text, status: "pending",
+      pane_id: null, created_ts: "ts1", done_ts: null }
+}
+
+rite task_load() {
+    ≔ path = task_queue_path();
+    ⎇ fs_exists(path) == false { ↩ []; }
+    ≔ raw = fs_read(path);
+    ⎇ len(raw) == 0 ∨ starts_with(raw, "[") == false { ↩ []; }
+    ≔ parsed = json_parse(raw);
+    ⎇ type_of(parsed) != "array" ∧ type_of(parsed) != "list" { ↩ []; }
+    ↩ parsed
+}
+
+rite task_save(tasks) { fs_write(task_queue_path(), json_stringify(tasks)); }
+
+rite main() {
+    // Clean up any leftover test file
+    ⎇ fs_exists(task_queue_path()) == true { fs_remove(task_queue_path()); }
+
+    // Save 2 tasks
+    ≔ mut tasks = [];
+    push(tasks, task_new("alpha"));
+    push(tasks, task_new("beta"));
+    task_save(tasks);
+
+    // Load them back
+    ≔ loaded = task_load();
+    println(len(loaded));                              // 2
+    println(map_get(loaded[0], "text"));               // alpha
+    println(map_get(loaded[0], "status"));             // pending
+    println(map_get(loaded[1], "text"));               // beta
+    println(map_get(loaded[0], "pane_id") == null);    // true
+
+    // Cleanup
+    fs_remove(task_queue_path());
+}

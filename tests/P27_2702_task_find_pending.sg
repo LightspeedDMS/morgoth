@@ -1,0 +1,55 @@
+// P27_2702: task_find_pending returns first pending; null when none remain
+// Uses save/load roundtrip to get proper map types from json_parse
+
+rite task_queue_path() { env("HOME") + "/.morgoth/tasks_test_2702.json" }
+
+rite task_new(text) {
+    { id: "id-" + text, text: text, status: "pending",
+      pane_id: null, created_ts: "ts1", done_ts: null }
+}
+
+rite task_load() {
+    ≔ path = task_queue_path();
+    ⎇ fs_exists(path) == false { ↩ []; }
+    ≔ raw = fs_read(path);
+    ⎇ len(raw) == 0 ∨ starts_with(raw, "[") == false { ↩ []; }
+    ≔ parsed = json_parse(raw);
+    ⎇ type_of(parsed) != "array" ∧ type_of(parsed) != "list" { ↩ []; }
+    ↩ parsed
+}
+
+rite task_save(tasks) { fs_write(task_queue_path(), json_stringify(tasks)); }
+
+rite task_find_pending(tasks) {
+    ≔ mut i = 0;
+    ⟳ i < len(tasks) {
+        ⎇ map_get(tasks[i], "status") == "pending" { ↩ tasks[i]; }
+        i = i + 1;
+    }
+    ↩ null
+}
+
+rite main() {
+    ⎇ fs_exists(task_queue_path()) == true { fs_remove(task_queue_path()); }
+
+    // Build and save [dispatched, pending, done] using raw JSON to get proper maps
+    ≔ raw = "[{\"id\":\"1\",\"text\":\"A\",\"status\":\"dispatched\",\"pane_id\":\"p1\",\"created_ts\":\"t\",\"done_ts\":null}," +
+             "{\"id\":\"2\",\"text\":\"B\",\"status\":\"pending\",\"pane_id\":null,\"created_ts\":\"t\",\"done_ts\":null}," +
+             "{\"id\":\"3\",\"text\":\"C\",\"status\":\"done\",\"pane_id\":\"p2\",\"created_ts\":\"t\",\"done_ts\":\"t2\"}]";
+    fs_write(task_queue_path(), raw);
+
+    ≔ tasks = task_load();
+    ≔ t = task_find_pending(tasks);
+    println(t != null);               // true
+    println(map_get(t, "text"));      // B
+    println(map_get(t, "status"));    // pending
+
+    // No pending tasks
+    ≔ raw2 = "[{\"id\":\"1\",\"text\":\"A\",\"status\":\"dispatched\",\"pane_id\":\"p1\",\"created_ts\":\"t\",\"done_ts\":null}]";
+    fs_write(task_queue_path(), raw2);
+    ≔ tasks2 = task_load();
+    ≔ t2 = task_find_pending(tasks2);
+    println(t2 == null);             // true
+
+    fs_remove(task_queue_path());
+}

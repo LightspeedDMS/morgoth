@@ -1,0 +1,100 @@
+// P27_2706: auto-dispatch simulation: idle Claude pane gets task text via pipe
+
+≔ IDLE_THRESHOLD = 120;
+
+rite task_queue_path() { env("HOME") + "/.morgoth/tasks_test_2706.json" }
+
+rite task_load() {
+    ≔ path = task_queue_path();
+    ⎇ fs_exists(path) == false { ↩ []; }
+    ≔ raw = fs_read(path);
+    ⎇ len(raw) == 0 ∨ starts_with(raw, "[") == false { ↩ []; }
+    ≔ parsed = json_parse(raw);
+    ⎇ type_of(parsed) != "array" ∧ type_of(parsed) != "list" { ↩ []; }
+    ↩ parsed
+}
+
+rite task_save(tasks) { fs_write(task_queue_path(), json_stringify(tasks)); }
+
+rite task_find_pending(tasks) {
+    ≔ mut i = 0;
+    ⟳ i < len(tasks) {
+        ⎇ map_get(tasks[i], "status") == "pending" { ↩ tasks[i]; }
+        i = i + 1;
+    }
+    ↩ null
+}
+
+rite main() {
+    ⎇ fs_exists(task_queue_path()) == true { fs_remove(task_queue_path()); }
+
+    // Create a pending task (no literal newline in JSON text field)
+    ≔ task_text = "Implement feature X";
+    ≔ raw = "[{\"id\":\"task-1\",\"text\":\"" + task_text + "\",\"status\":\"pending\",\"pane_id\":null,\"created_ts\":\"ts1\",\"done_ts\":null}]";
+    fs_write(task_queue_path(), raw);
+
+    // Set up simulated panes
+    ≔ pipe = Sys·pipe();
+    ≔ read_fd = pipe.read_fd;
+    ≔ write_fd = pipe.write_fd;
+
+    ≔ mut panes = [];
+    push(panes, {id: "pane-A", pane_type: "terminal", role: "claude",
+                 alive: true, current_task_id: null,
+                 last_pty_tick: 50, master_fd: write_fd});
+
+    ≔ tick_counter = 200;
+
+    // Simulate auto-dispatch logic
+    ≔ mut tq_check = task_load();
+    ≔ t_pending = task_find_pending(tq_check);
+    ⎇ t_pending != null {
+        ≔ mut adpi = 0; ≔ mut target_pi = -1;
+        ⟳ adpi < len(panes) ∧ target_pi == -1 {
+            ⎇ panes[adpi].pane_type == "terminal" ∧
+              panes[adpi].role == "claude" ∧
+              panes[adpi].alive == true ∧
+              panes[adpi].current_task_id == null ∧
+              tick_counter - panes[adpi].last_pty_tick >= IDLE_THRESHOLD {
+                target_pi = adpi;
+            }
+            adpi = adpi + 1;
+        }
+        ⎇ target_pi >= 0 {
+            ≔ tid   = map_get(t_pending, "id");
+            ≔ ttext = map_get(t_pending, "text");
+            Sys·write(panes[target_pi].master_fd, ttext, len(ttext));
+            panes[target_pi].current_task_id = tid;
+            // Inline mark_dispatched
+            ≔ mut mdi = 0;
+            ⟳ mdi < len(tq_check) {
+                ⎇ map_get(tq_check[mdi], "id") == tid {
+                    ≔ td_txt = map_get(tq_check[mdi], "text");
+                    ≔ td_cts = map_get(tq_check[mdi], "created_ts");
+                    tq_check[mdi] = { id: tid, text: td_txt, status: "dispatched",
+                                      pane_id: panes[target_pi].id,
+                                      created_ts: td_cts, done_ts: null };
+                }
+                mdi = mdi + 1;
+            }
+            task_save(tq_check);
+            println("dispatched");
+        }
+    }
+
+    // Read from pipe to confirm text was written
+    ≔ got = Sys·read_string(read_fd, 256);
+    println(got);   // Implement feature X\n
+
+    // Verify pane state
+    println(panes[0].current_task_id);   // task-1
+
+    // Verify task file
+    ≔ reloaded = task_load();
+    println(map_get(reloaded[0], "status"));    // dispatched
+    println(map_get(reloaded[0], "pane_id"));   // pane-A
+
+    Sys·close(read_fd);
+    Sys·close(write_fd);
+    fs_remove(task_queue_path());
+}

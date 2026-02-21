@@ -1,0 +1,48 @@
+// P27_2705: Idle predicate: delta>=IDLE_THRESHOLD, claude role, alive, no current_task
+
+≔ IDLE_THRESHOLD = 120;
+
+rite is_idle_claude(pane, tick_counter) {
+    ⎇ pane.pane_type == "terminal" ∧
+      pane.role == "claude" ∧
+      pane.alive == true ∧
+      pane.current_task_id == null ∧
+      tick_counter - pane.last_pty_tick >= IDLE_THRESHOLD {
+        ↩ true;
+    }
+    ↩ false
+}
+
+rite main() {
+    ≔ tick = 200;
+
+    // Idle Claude pane: all conditions met
+    ≔ p1 = {pane_type: "terminal", role: "claude", alive: true,
+             current_task_id: null, last_pty_tick: 50};
+    println(is_idle_claude(p1, tick));     // true
+
+    // Too recent (tick delta < threshold)
+    ≔ p2 = {pane_type: "terminal", role: "claude", alive: true,
+             current_task_id: null, last_pty_tick: 100};
+    println(is_idle_claude(p2, tick));     // false
+
+    // Already has a task
+    ≔ p3 = {pane_type: "terminal", role: "claude", alive: true,
+             current_task_id: "task-1", last_pty_tick: 50};
+    println(is_idle_claude(p3, tick));     // false
+
+    // Not a claude role
+    ≔ p4 = {pane_type: "terminal", role: "terminal", alive: true,
+             current_task_id: null, last_pty_tick: 50};
+    println(is_idle_claude(p4, tick));     // false
+
+    // Dead pane
+    ≔ p5 = {pane_type: "terminal", role: "claude", alive: false,
+             current_task_id: null, last_pty_tick: 50};
+    println(is_idle_claude(p5, tick));     // false
+
+    // Monitor pane (last_pty_tick = -1)
+    ≔ p6 = {pane_type: "monitor", role: "monitor", alive: false,
+             current_task_id: null, last_pty_tick: -1};
+    println(is_idle_claude(p6, tick));     // false
+}
