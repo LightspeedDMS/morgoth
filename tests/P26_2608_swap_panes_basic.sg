@@ -1,0 +1,19 @@
+// P26_2608: inline array slot swap works correctly within same scope
+// Note: swap_panes as a helper function won't work (array args are by-value).
+// Pane swap is done inline in the event loop. This test verifies the inline swap pattern.
+
+rite main() {
+    ≔ mut arr = [];
+    push(arr, {id: "A"});
+    push(arr, {id: "B"});
+    push(arr, {id: "C"});
+
+    // Inline swap of arr[0] and arr[2]
+    ≔ tmp = arr[0];
+    arr[0] = arr[2];
+    arr[2] = tmp;
+
+    println(arr[0].id);
+    println(arr[1].id);
+    println(arr[2].id);
+}

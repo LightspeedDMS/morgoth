@@ -1,0 +1,5 @@
+manifest_valid_json: OK
+version_field: OK
+socket_field: OK
+registry_field: OK
+fifos_field: OK

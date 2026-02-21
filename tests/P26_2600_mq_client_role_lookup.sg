@@ -1,0 +1,59 @@
+// P26_2600: Role-based pane lookup from registry JSON
+// Tests the logic that morgoth-send --to-role implements
+
+rite main() {
+    // Simulate a registry JSON array (what write_registry produces)
+    ≔ reg_json = "[{\"id\":\"uuid-aaa\",\"role\":\"terminal\",\"title\":\"bash\",\"fifo\":\"/tmp/fifo-aaa\"},{\"id\":\"uuid-bbb\",\"role\":\"claude\",\"title\":\"Claude Code\",\"fifo\":\"/tmp/fifo-bbb\"},{\"id\":\"uuid-ccc\",\"role\":\"monitor\",\"title\":\"monitor\",\"fifo\":\"\"}]";
+    ≔ registry = json_parse(reg_json);
+
+    // Find first pane with role == "claude"
+    ≔ mut i = 0;
+    ≔ mut found_id = "";
+    ⟳ i < len(registry) {
+        ≔ entry = registry[i];
+        ⎇ map_get(entry, "role") == "claude" ∧ found_id == "" {
+            found_id = map_get(entry, "id");
+        }
+        i = i + 1;
+    }
+
+    ⎇ found_id == "uuid-bbb" {
+        println("role_lookup: OK");
+    } ⎉ {
+        println("role_lookup: FAILED got=" + found_id);
+    }
+
+    // Find terminal role
+    ≔ mut j = 0;
+    ≔ mut term_id = "";
+    ⟳ j < len(registry) {
+        ≔ entry = registry[j];
+        ⎇ map_get(entry, "role") == "terminal" ∧ term_id == "" {
+            term_id = map_get(entry, "id");
+        }
+        j = j + 1;
+    }
+
+    ⎇ term_id == "uuid-aaa" {
+        println("terminal_lookup: OK");
+    } ⎉ {
+        println("terminal_lookup: FAILED got=" + term_id);
+    }
+
+    // No match for unknown role
+    ≔ mut k = 0;
+    ≔ mut unknown_id = "";
+    ⟳ k < len(registry) {
+        ≔ entry = registry[k];
+        ⎇ map_get(entry, "role") == "nonexistent" ∧ unknown_id == "" {
+            unknown_id = map_get(entry, "id");
+        }
+        k = k + 1;
+    }
+
+    ⎇ unknown_id == "" {
+        println("no_match_for_unknown_role: OK");
+    } ⎉ {
+        println("no_match_for_unknown_role: FAILED got=" + unknown_id);
+    }
+}

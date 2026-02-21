@@ -1,0 +1,38 @@
+// P26_2604: bcast toggle flips InputState.bcast
+// Note: "broadcast" is a reserved keyword in Sigil; field is named "bcast"
+
+rite main() {
+    ≔ mut state = {bcast: false};
+
+    // Initially off
+    ⎇ state.bcast == false {
+        println("initial_off: OK");
+    } ⎉ {
+        println("initial_off: FAILED");
+    }
+
+    // Toggle on
+    state.bcast = state.bcast == false;
+    ⎇ state.bcast == true {
+        println("toggle_on: OK");
+    } ⎉ {
+        println("toggle_on: FAILED");
+    }
+
+    // Toggle off again
+    state.bcast = state.bcast == false;
+    ⎇ state.bcast == false {
+        println("toggle_off: OK");
+    } ⎉ {
+        println("toggle_off: FAILED");
+    }
+
+    // Double toggle: on then off = same as off
+    state.bcast = state.bcast == false;
+    state.bcast = state.bcast == false;
+    ⎇ state.bcast == false {
+        println("double_toggle_back: OK");
+    } ⎉ {
+        println("double_toggle_back: FAILED");
+    }
+}

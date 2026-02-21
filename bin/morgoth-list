@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# morgoth-list — list active Morgoth panes from the registry
+#
+# Usage:
+#   morgoth-list
+#   morgoth-list --json    Output raw registry JSON
+#   morgoth-list --role ROLE  Filter by role (terminal|claude|monitor)
+#
+# Dependencies: jq
+#
+# Examples:
+#   morgoth-list
+#   morgoth-list --role claude
+#   morgoth-list --json | jq '.[0].id'
+
+set -euo pipefail
+
+REGISTRY="$HOME/.morgoth/registry.json"
+FILTER_ROLE=""
+OUTPUT_JSON=false
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --json)   OUTPUT_JSON=true; shift ;;
+    --role)   FILTER_ROLE="$2"; shift 2 ;;
+    -h|--help)
+      head -20 "$0" | grep '^#' | sed 's/^# *//'
+      exit 0
+      ;;
+    *) shift ;;
+  esac
+done
+
+if [[ ! -f "$REGISTRY" ]]; then
+  echo "Morgoth not running (no registry.json at $REGISTRY)"
+  exit 1
+fi
+
+if [[ "$OUTPUT_JSON" == true ]]; then
+  if [[ -n "$FILTER_ROLE" ]]; then
+    jq --arg r "$FILTER_ROLE" '[.[] | select(.role == $r)]' "$REGISTRY"
+  else
+    cat "$REGISTRY"
+  fi
+  exit 0
+fi
+
+# Human-readable table
+printf "%-38s  %-9s  %-18s  %s\n" "UUID" "ROLE" "TITLE" "FIFO"
+printf "%-38s  %-9s  %-18s  %s\n" "$(printf '%0.s-' {1..38})" "---------" "------------------" "----"
+
+QUERY='.[]'
+if [[ -n "$FILTER_ROLE" ]]; then
+  QUERY=".[] | select(.role == \"$FILTER_ROLE\")"
+fi
+
+jq -r "$QUERY | [.id, .role, (.title // ""), (.fifo // "")] | @tsv" "$REGISTRY" | \
+  while IFS=$'\t' read -r id role title fifo; do
+    printf "%-38s  %-9s  %-18s  %s\n" "$id" "$role" "${title:0:18}" "${fifo##*/home/*/}"
+  done

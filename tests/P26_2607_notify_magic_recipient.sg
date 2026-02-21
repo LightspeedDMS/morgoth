@@ -1,0 +1,63 @@
+// P26_2607: mq_process_external with recipient="notify" routes to pane[0].inbox
+
+rite mq_send(panes, from_id, to_id, kind, payload) {
+    ≔ mut i = 0;
+    ⟳ i < len(panes) {
+        ⎇ panes[i].id == to_id {
+            push(panes[i].inbox, {kind: kind, payload: payload});
+        }
+        i = i + 1;
+    }
+}
+
+// Simulate the routing logic from mq_process_external
+rite route_message(panes, recip, kind, payload) {
+    ⎇ recip == "notify" ∨ kind == "notify" {
+        ⎇ len(panes) > 0 ∧ payload != null {
+            push(panes[0].inbox, { kind: "notify", payload: payload });
+        }
+    } ⎉ {
+        ⎇ recip != null ∧ kind != null ∧ payload != null {
+            mq_send(panes, "external", recip, kind, payload);
+        }
+    }
+}
+
+rite main() {
+    ≔ mut panes = [];
+    push(panes, {id: "uuid-a", inbox: [], pane_type: "terminal"});
+    push(panes, {id: "uuid-b", inbox: [], pane_type: "terminal"});
+
+    // Notify with magic recipient
+    route_message(panes, "notify", "notify", "Tests: 42 passed");
+
+    ⎇ len(panes[0].inbox) == 1 {
+        println("notify_to_pane0: OK");
+    } ⎉ {
+        println("notify_to_pane0: FAILED inbox_len=" + to_string(len(panes[0].inbox)));
+    }
+
+    ⎇ len(panes[0].inbox) == 1 {
+        ≔ msg = panes[0].inbox[0];
+        ⎇ msg.kind == "notify" ∧ msg.payload == "Tests: 42 passed" {
+            println("notify_kind_and_payload: OK");
+        } ⎉ {
+            println("notify_kind_and_payload: FAILED kind=" + msg.kind + " payload=" + msg.payload);
+        }
+    }
+
+    // pane[1] should be untouched
+    ⎇ len(panes[1].inbox) == 0 {
+        println("other_pane_untouched: OK");
+    } ⎉ {
+        println("other_pane_untouched: FAILED");
+    }
+
+    // Regular paste still routes by UUID
+    route_message(panes, "uuid-b", "paste", "hello");
+    ⎇ len(panes[1].inbox) == 1 {
+        println("regular_paste_routed: OK");
+    } ⎉ {
+        println("regular_paste_routed: FAILED");
+    }
+}

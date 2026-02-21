@@ -1,0 +1,5 @@
+msg_roundtrip: OK
+recipient_field: OK
+kind_field: OK
+payload_field: OK
+notify_format: OK

@@ -1,0 +1,53 @@
+// P26_2605: when bcast=true, passthrough writes to all alive terminal pane fds
+
+rite main() {
+    // Create fake pipe pairs to capture output
+    ≔ pipe0 = Sys·pipe();
+    ≔ pipe1 = Sys·pipe();
+    ≔ pipe2 = Sys·pipe();
+
+    ≔ mut panes = [];
+    push(panes, {master_fd: pipe0.write_fd, alive: true,  pane_type: "terminal"});
+    push(panes, {master_fd: pipe1.write_fd, alive: true,  pane_type: "terminal"});
+    push(panes, {master_fd: pipe2.write_fd, alive: false, pane_type: "terminal"});  // dead: skipped
+
+    ≔ bcast = true;
+    ≔ ch = "x";
+
+    // Simulate bcast passthrough
+    ⎇ bcast == true {
+        ≔ mut bri = 0;
+        ⟳ bri < len(panes) {
+            ⎇ panes[bri].alive == true ∧ panes[bri].pane_type == "terminal" {
+                Sys·write(panes[bri].master_fd, ch, 1);
+            }
+            bri = bri + 1;
+        }
+    }
+
+    // Read back from each pipe
+    ≔ got0 = Sys·read_string(pipe0.read_fd, 1);
+    ≔ got1 = Sys·read_string(pipe1.read_fd, 1);
+
+    // Close write ends before reading pipe2 (dead pane: nothing written)
+    Sys·close(pipe2.write_fd);
+    ≔ got2 = Sys·read_string(pipe2.read_fd, 1);
+
+    ⎇ got0 == "x" {
+        println("alive_pane0_received: OK");
+    } ⎉ {
+        println("alive_pane0_received: FAILED got=" + got0);
+    }
+
+    ⎇ got1 == "x" {
+        println("alive_pane1_received: OK");
+    } ⎉ {
+        println("alive_pane1_received: FAILED got=" + got1);
+    }
+
+    ⎇ got2 == "" {
+        println("dead_pane2_skipped: OK");
+    } ⎉ {
+        println("dead_pane2_skipped: FAILED got=" + got2);
+    }
+}

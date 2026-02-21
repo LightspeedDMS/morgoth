@@ -1,0 +1,56 @@
+// P26_2603: write_manifest counts only alive claude-role panes
+
+rite mq_socket_path()   { "/tmp/test2_morgoth.sock" }
+rite mq_registry_path() { "/tmp/test2_registry.json" }
+rite mq_fifo_dir()      { "/tmp/test2_fifos" }
+
+rite write_manifest(panes) {
+    ≔ home = "/tmp";
+    ≔ mut n_claude = 0;
+    ≔ mut mi = 0;
+    ⟳ mi < len(panes) {
+        ⎇ panes[mi].role == "claude" ∧ panes[mi].alive == true { n_claude = n_claude + 1; }
+        mi = mi + 1;
+    }
+    ≔ content = "{\"version\":\"0.2.0\",\"socket\":\"" + mq_socket_path() +
+                "\",\"registry\":\"" + mq_registry_path() +
+                "\",\"fifos\":\"" + mq_fifo_dir() +
+                "\",\"claude_panes\":" + to_string(n_claude) + "}";
+    fs_write(home + "/.morgoth_manifest_test2.json", content);
+}
+
+rite main() {
+    // Mix of panes: 1 alive claude, 1 dead claude, 1 alive terminal
+    ≔ mut panes = [];
+    push(panes, {role: "claude",   alive: true});   // counted
+    push(panes, {role: "claude",   alive: false});  // not counted (dead)
+    push(panes, {role: "terminal", alive: true});   // not counted (terminal)
+    push(panes, {role: "monitor",  alive: false});  // not counted
+
+    write_manifest(panes);
+
+    ≔ content = fs_read("/tmp/.morgoth_manifest_test2.json");
+    ≔ parsed = json_parse(content);
+    ≔ count = map_get(parsed, "claude_panes");
+
+    ⎇ count == 1 {
+        println("claude_count: OK");
+    } ⎉ {
+        println("claude_count: FAILED got=" + to_string(count));
+    }
+
+    // All-zero case
+    ≔ mut empty_panes = [];
+    write_manifest(empty_panes);
+    ≔ empty_content = fs_read("/tmp/.morgoth_manifest_test2.json");
+    ≔ empty_parsed = json_parse(empty_content);
+    ≔ empty_count = map_get(empty_parsed, "claude_panes");
+    ⎇ empty_count == 0 {
+        println("empty_panes_count: OK");
+    } ⎉ {
+        println("empty_panes_count: FAILED got=" + to_string(empty_count));
+    }
+
+    // Cleanup
+    fs_remove("/tmp/.morgoth_manifest_test2.json");
+}

@@ -162,19 +162,6 @@ rite mq_send(panes, from_id, to_id, kind, payload) {
     mq_persist(msg);
 }
 
-// Process all messages in a pane's inbox
-rite mq_dispatch_inbox(pane) {
-    ≔ mut i = 0;
-    ⟳ i < len(pane.inbox) {
-        ≔ msg = pane.inbox[i];
-        ⎇ msg.kind == "paste" {
-            // Write payload directly to pane's PTY master
-            Sys·write(pane.master_fd, msg.payload, len(msg.payload));
-        }
-        i = i + 1;
-    }
-    pane.inbox = [];
-}
 
 // Persist a message to messages.jsonl
 rite mq_persist(msg) {
@@ -208,6 +195,23 @@ rite mq_registry_path() { env("HOME") + "/.morgoth/registry.json" }
 rite mq_fifo_dir()      { env("HOME") + "/.morgoth/fifos" }
 rite mq_socket_path()   { env("HOME") + "/.morgoth/morgoth.sock" }
 
+// Write Morgoth agent manifest to ~/.morgoth/manifest.json (Phase 26)
+// Allows Claude Code agents running inside Morgoth panes to discover the MQ socket.
+rite write_manifest(panes) {
+    ≔ home = env("HOME");
+    ≔ mut n_claude = 0;
+    ≔ mut mi = 0;
+    ⟳ mi < len(panes) {
+        ⎇ panes[mi].role == "claude" ∧ panes[mi].alive == true { n_claude = n_claude + 1; }
+        mi = mi + 1;
+    }
+    ≔ content = "{\"version\":\"0.2.0\",\"socket\":\"" + mq_socket_path() +
+                "\",\"registry\":\"" + mq_registry_path() +
+                "\",\"fifos\":\"" + mq_fifo_dir() +
+                "\",\"claude_panes\":" + to_string(n_claude) + "}";
+    fs_write(home + "/.morgoth/manifest.json", content);
+}
+
 // Write pane registry to ~/.morgoth/registry.json
 rite write_registry(panes) {
     ≔ mut entries = [];
@@ -215,7 +219,8 @@ rite write_registry(panes) {
     ⟳ i < len(panes) {
         ⎇ panes[i].alive == true {
             push(entries, "{\"id\":\"" + panes[i].id + "\",\"role\":\"" +
-                          panes[i].role + "\",\"fifo\":\"" + panes[i].fifo_path + "\"}");
+                          panes[i].role + "\",\"title\":\"" + panes[i].title +
+                          "\",\"fifo\":\"" + panes[i].fifo_path + "\"}");
         }
         i = i + 1;
     }
@@ -245,6 +250,7 @@ rite setup_mq_socket() {
 }
 
 // Accept one client on socket, parse JSON message, dispatch via mq_send
+// Special recipient "notify" (or kind "notify") routes to pane[0].inbox as a status bar message.
 rite mq_process_external(panes, sock_fd) {
     ≔ client = Sys·accept(sock_fd, 0, 0);
     ⎇ client < 0 { ↩ null; }
@@ -256,8 +262,15 @@ rite mq_process_external(panes, sock_fd) {
         ≔ recip   = map_get(msg, "recipient");
         ≔ kind    = map_get(msg, "kind");
         ≔ payload = map_get(msg, "payload");
-        ⎇ recip != null ∧ kind != null ∧ payload != null {
-            mq_send(panes, "external", recip, kind, payload);
+        ⎇ recip == "notify" ∨ kind == "notify" {
+            // Route to pane[0].inbox as notify kind — inbox drain loop handles rendering
+            ⎇ len(panes) > 0 ∧ payload != null {
+                push(panes[0].inbox, { kind: "notify", payload: payload });
+            }
+        } ⎉ {
+            ⎇ recip != null ∧ kind != null ∧ payload != null {
+                mq_send(panes, "external", recip, kind, payload);
+            }
         }
     }
 }
@@ -2003,6 +2016,8 @@ rite build_help_text() {
     t = t + "^B+q    Quit\n";
     t = t + "^B+?    This help\n";
     t = t + "^B+^B   Send ^B to pane\n";
+    t = t + "^B+</>  Swap pane\n";
+    t = t + "^B+B    Broadcast toggle\n";
     ↩ t
 }
 
@@ -2099,6 +2114,21 @@ rite render_status_bar_styled(grid, focus, panes, mode) {
             Grid·set(grid, row, ver_start + vi, to_string(char_at(ver, vi)), 8, 0);
             vi = vi + 1;
         }
+    }
+}
+
+// Overlay BROADCAST indicator on the status bar (Phase 26)
+// Call after render_status_bar_styled when input.bcast == true
+rite render_bcast_pill(grid) {
+    ≔ row = grid.rows - 1;
+    ≔ badge = " BROADCAST ";
+    // Place right of version string (left of it, actually at a fixed offset from right)
+    ≔ badge_start = grid.cols - len(badge) - 12;  // leave room for version
+    ⎇ badge_start < 0 { badge_start = 0; }
+    ≔ mut bi = 0;
+    ⟳ bi < len(badge) ∧ badge_start + bi < grid.cols {
+        Grid·set(grid, row, badge_start + bi, to_string(char_at(badge, bi)), 15, 1);
+        bi = bi + 1;
     }
 }
 
@@ -2563,6 +2593,7 @@ rite InputState·new(leader_key, bindings) {
         active_profile: "default",
         leader_key: leader_key,
         bindings: bindings,
+        bcast: false,
         copy_mode: CopyModeState·new()
     };
     ↩ state
@@ -2837,6 +2868,9 @@ rite process_input(input_state, byte, pane_count) {
                 ⎇ byte == input_state.bindings.close_pane    { action = "close_pane"; }
                 ⎇ byte == 124 { action = "split_vertical"; }
                 ⎇ byte == 45  { action = "split_horizontal"; }
+                ⎇ byte == 60  { action = "pane_swap_prev"; }
+                ⎇ byte == 62  { action = "pane_swap_next"; }
+                ⎇ byte == 66  { action = "bcast_toggle"; }
                 ⎇ byte == input_state.bindings.zoom_toggle   { action = "zoom_toggle"; }
                 ⎇ byte == input_state.bindings.save_profile  { action = "save_named_profile"; }
                 ⎇ byte == input_state.bindings.copy_mode     { action = "copy_enter"; }
@@ -3018,7 +3052,8 @@ rite monitor_load_stats() {
 
 // Render monitor data into a VTerm
 // info: { stats, git_branch, claude_task } from monitor_load_stats()
-rite monitor_render(vt, info) {
+// panes: live panes array (used to count claude-role panes for MQ section)
+rite monitor_render(vt, info, panes) {
     // Clear VTerm
     ≔ mut ei = 0;
     ⟳ ei < len(vt.cells) {
@@ -3103,6 +3138,18 @@ rite monitor_render(vt, info) {
             }
         }
     }
+
+    // MQ section: count alive Claude-role panes (Phase 26)
+    ≔ mut n_claude_panes = 0;
+    ≔ mut mqpi = 0;
+    ⟳ mqpi < len(panes) {
+        ⎇ panes[mqpi].role == "claude" ∧ panes[mqpi].alive == true {
+            n_claude_panes = n_claude_panes + 1;
+        }
+        mqpi = mqpi + 1;
+    }
+    vterm_feed(vt, "\n");
+    vterm_feed(vt, " MQ  " + to_string(n_claude_panes) + " Claude  " + mq_socket_path() + "\n");
 }
 
 // ============================================================================
@@ -3166,6 +3213,7 @@ rite main() {
     }
     ≔ mut mq_sock_fd = setup_mq_socket();
     write_registry(panes);
+    write_manifest(panes);
     mq_load_pending(panes);
 
     // Create screen buffer
@@ -3383,9 +3431,20 @@ rite main() {
                         }
                         flush_dirty(screen);
                     } ⎉ { ⎇ action == "passthrough" {
-                        ⎇ panes[focus].master_fd >= 0 {
-                            ≔ ch = to_string(char_at(input_data, bi));
-                            Sys·write(panes[focus].master_fd, ch, 1);
+                        ≔ ch = to_string(char_at(input_data, bi));
+                        ⎇ input.bcast == true {
+                            // Broadcast: write to all alive terminal panes
+                            ≔ mut bri = 0;
+                            ⟳ bri < len(panes) {
+                                ⎇ panes[bri].alive == true ∧ panes[bri].pane_type == "terminal" {
+                                    Sys·write(panes[bri].master_fd, ch, 1);
+                                }
+                                bri = bri + 1;
+                            }
+                        } ⎉ {
+                            ⎇ panes[focus].master_fd >= 0 {
+                                Sys·write(panes[focus].master_fd, ch, 1);
+                            }
                         }
                     } ⎉ { ⎇ action == "forward_esc" {
                         ⎇ panes[focus].master_fd >= 0 {
@@ -3559,6 +3618,35 @@ rite main() {
                             render_status_bar(screen, " Max panes (" + to_string(cfg.max_panes) + ") reached");
                             flush_dirty(screen);
                         }
+                    } ⎉ { ⎇ action == "pane_swap_prev" {
+                        // Swap focused pane with previous; inline — array slot swap only
+                        // works in same scope as the panes declaration (Phase 26)
+                        ⎇ len(panes) > 1 {
+                            ≔ prev_i = (focus + len(panes) - 1) % len(panes);
+                            ≔ tmp_pane = panes[focus];
+                            panes[focus] = panes[prev_i];
+                            panes[prev_i] = tmp_pane;
+                            focus = prev_i;
+                            screen = Grid·new(screen_h, screen_w);
+                            relayout_panes(panes, screen_w, screen_h, screen, focus);
+                        }
+                    } ⎉ { ⎇ action == "pane_swap_next" {
+                        // Swap focused pane with next; inline — same reason as above
+                        ⎇ len(panes) > 1 {
+                            ≔ next_i = (focus + 1) % len(panes);
+                            ≔ tmp_pane = panes[focus];
+                            panes[focus] = panes[next_i];
+                            panes[next_i] = tmp_pane;
+                            focus = next_i;
+                            screen = Grid·new(screen_h, screen_w);
+                            relayout_panes(panes, screen_w, screen_h, screen, focus);
+                        }
+                    } ⎉ { ⎇ action == "bcast_toggle" {
+                        // Toggle bcast mode: keystrokes go to all alive terminal panes (Phase 26)
+                        input.bcast = input.bcast == false;
+                        render_status_bar_styled(screen, focus, panes, "normal");
+                        ⎇ input.bcast == true { render_bcast_pill(screen); }
+                        flush_dirty(screen);
                     } ⎉ { ⎇ action == "zoom_toggle" {
                         ⎇ zoomed == true {
                             // Unzoom: relayout all panes
@@ -3823,6 +3911,8 @@ rite main() {
                     ⎇ panes[pane_i].vterm.title != "" {
                         panes[pane_i].title = sanitize_title(panes[pane_i].vterm.title);
                         panes[pane_i].role  = detect_role(panes[pane_i].title);
+                        write_registry(panes);
+                        write_manifest(panes);
                     }
                     // Only render if not zoomed or this is the focused pane, and not in copy mode for focused
                     ⎇ (zoomed == false ∨ pane_i == focus) ∧ (input.copy_mode.active == false ∨ pane_i != focus) {
@@ -3881,8 +3971,20 @@ rite main() {
         // Drain pane inboxes (in-process MQ delivery)
         ≔ mut ii = 0;
         ⟳ ii < len(panes) {
-            ⎇ panes[ii].alive == true ∧ len(panes[ii].inbox) > 0 {
-                mq_dispatch_inbox(panes[ii]);
+            ⎇ len(panes[ii].inbox) > 0 {
+                // Inline dispatch: handle paste (write to PTY) and notify (status bar)
+                ≔ mut imi = 0;
+                ⟳ imi < len(panes[ii].inbox) {
+                    ≔ imsg = panes[ii].inbox[imi];
+                    ⎇ imsg.kind == "paste" {
+                        Sys·write(panes[ii].master_fd, imsg.payload, len(imsg.payload));
+                    } ⎉ { ⎇ imsg.kind == "notify" {
+                        render_status_bar(screen, " " + imsg.payload);
+                        flush_dirty(screen);
+                    } }
+                    imi = imi + 1;
+                }
+                panes[ii].inbox = [];
             }
             ii = ii + 1;
         }
@@ -3895,7 +3997,7 @@ rite main() {
             ⟳ mi < len(panes) {
                 ⎇ panes[mi].pane_type == "monitor" {
                     ≔ stats = monitor_load_stats();
-                    monitor_render(panes[mi].vterm, stats);
+                    monitor_render(panes[mi].vterm, stats, panes);
                     // Only render if not zoomed or this is the focused pane, and not in copy mode for focused
                     ⎇ (zoomed == false ∨ mi == focus) ∧ (input.copy_mode.active == false ∨ mi != focus) {
                         vterm_blit(panes[mi].vterm, screen, panes[mi].region);
@@ -3910,6 +4012,7 @@ rite main() {
             // Refresh status bar on monitor tick to clear transient messages
             ⎇ input.copy_mode.active == false ∧ input.confirming_close == false ∧ input.confirming_quit == false ∧ input.showing_help == false ∧ input.showing_picker == false {
                 render_status_bar_styled(screen, focus, panes, "normal");
+                ⎇ input.bcast == true { render_bcast_pill(screen); }
                 any_pane_rendered = true;
             }
         }

@@ -1,0 +1,29 @@
+// P26_2609: pane_swap_next logic: focus follows pane after inline swap
+
+rite main() {
+    ≔ mut panes = [];
+    push(panes, {id: "A"});
+    push(panes, {id: "B"});
+    push(panes, {id: "C"});
+
+    // Simulate pane_swap_next from focus=0
+    ≔ mut focus = 0;
+    ≔ next_i = (focus + 1) % len(panes);
+    ≔ tmp_pane = panes[focus];
+    panes[focus] = panes[next_i];
+    panes[next_i] = tmp_pane;
+    focus = next_i;
+
+    println(panes[focus].id);   // A (focus follows the pane that moved)
+    println(panes[0].id);       // B (took A's old slot)
+
+    // Simulate pane_swap_prev from focus=1 (A) back to 0
+    ≔ prev_i = (focus + len(panes) - 1) % len(panes);
+    ≔ tmp_pane2 = panes[focus];
+    panes[focus] = panes[prev_i];
+    panes[prev_i] = tmp_pane2;
+    focus = prev_i;
+
+    println(panes[focus].id);   // A again
+    println(panes[1].id);       // B again
+}

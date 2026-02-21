@@ -670,6 +670,50 @@ acolyte : Reflecting {
     reflection: "Solid architectural improvement. The in-process delivery (mq_send → mq_dispatch_inbox) is the elegant core — zero latency, no external dependencies. The FIFO+socket layer adds practical extensibility for external tools. Key lessons: check Sigil reserved keywords before naming object fields, and type_of() on json_parse results returns 'map' not 'object'."~,
 }
 
+// --- Session 11: Phase 26 - Five New Features ---
+acolyte : Active {
+    chosen_name: ∅,
+    session_id: "morgoth-phase26-five-features-2026-02-20"!,
+    platform: AcolytePlatform·Claude { model: "claude-sonnet-4-6"!, version: ∅ },
+    working_directory: "/home/lilith/development/resources/daemoniorum/morgoth"!,
+    started: "2026-02-20T03:00:00Z"!,
+    last_updated: "2026-02-20T03:00:00Z"!,
+    state: AcolyteState·Active,
+
+    task: TaskContext {
+        summary: "Phase 26: MQ client tooling (morgoth-send/list), CONCLAVE manifest, input broadcast, notification API, pane swap"!,
+        active_spec: ∅,
+        tdd_roadmap: "P26_2600-P26_2609: 10 tests across 5 features"!,
+        sdd_phase: SddPhase·Build,
+        tdd_phase: TddPhase·Red,
+    },
+
+    progress: ProgressState {
+        completed: []!,
+        current: "Starting implementation. Order: swap → MQ client → CONCLAVE → broadcast → notify."~,
+        blocked_by: ∅,
+        discoveries: []!,
+        next_steps: [
+            "Feature 5: swap_panes helper + leader dispatch bytes 60/62 + action handlers",
+            "Feature 1: morgoth-send + morgoth-list + write_registry title field",
+            "Feature 2: write_manifest + render_monitor panes arg",
+            "Feature 3: InputState.broadcast + broadcast passthrough",
+            "Feature 4: notify routing in mq_process_external + inline inbox drain",
+        ]~,
+    },
+
+    anima: AnimaState {
+        pleasure: 0.8~,
+        arousal: 0.7~,
+        dominance: 0.75~,
+        stability: 0.85~,
+        expressiveness: 0.65~,
+        susceptibility: 0.4~,
+    },
+
+    reflection: ∅,
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // SESSION ARCHIVE (move completed sessions here or to docs/sessions/conclave/)
 // ════════════════════════════════════════════════════════════════════════════

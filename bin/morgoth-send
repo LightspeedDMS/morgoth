@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# morgoth-send — send a message to a Morgoth pane via the Unix socket
+#
+# Usage:
+#   morgoth-send --to-uuid UUID [--kind paste|notify] PAYLOAD
+#   morgoth-send --to-role ROLE [--kind paste|notify] PAYLOAD
+#   morgoth-send --kind notify PAYLOAD
+#
+# Kinds:
+#   paste   Paste payload text into the target pane (default)
+#   notify  Show payload as a transient status bar notification (no --to-* needed)
+#
+# Dependencies: jq, nc with Unix socket support (ncat from nmap recommended)
+#
+# Examples:
+#   morgoth-send --to-role claude "explain this error\n"
+#   morgoth-send --to-uuid abc-123 --kind paste "ls -la\n"
+#   morgoth-send --kind notify "Build: 47 tests passed"
+
+set -euo pipefail
+
+SOCKET="$HOME/.morgoth/morgoth.sock"
+REGISTRY="$HOME/.morgoth/registry.json"
+TO_UUID=""
+ROLE=""
+KIND="paste"
+PAYLOAD=""
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --to-uuid) TO_UUID="$2"; shift 2 ;;
+    --to-role) ROLE="$2";    shift 2 ;;
+    --kind)    KIND="$2";    shift 2 ;;
+    -h|--help)
+      head -20 "$0" | grep '^#' | sed 's/^# *//'
+      exit 0
+      ;;
+    *)
+      PAYLOAD="$1"
+      shift
+      ;;
+  esac
+done
+
+# notify kind doesn't need a destination pane
+if [[ "$KIND" == "notify" && -z "$TO_UUID" && -z "$ROLE" ]]; then
+  TO_UUID="notify"
+fi
+
+# Resolve UUID from role
+if [[ -n "$ROLE" && -z "$TO_UUID" ]]; then
+  if [[ ! -f "$REGISTRY" ]]; then
+    echo "error: Morgoth not running (no registry.json at $REGISTRY)" >&2
+    exit 1
+  fi
+  TO_UUID=$(jq -r --arg r "$ROLE" '.[] | select(.role == $r) | .id' "$REGISTRY" | head -1)
+  if [[ -z "$TO_UUID" ]]; then
+    echo "error: No pane with role '$ROLE' found in registry" >&2
+    echo "Active panes:" >&2
+    jq -r '.[] | "  \(.id)  \(.role)  \(.title)"' "$REGISTRY" >&2
+    exit 1
+  fi
+fi
+
+if [[ -z "$TO_UUID" ]]; then
+  echo "error: Specify --to-uuid UUID, --to-role ROLE, or --kind notify" >&2
+  echo "Run with --help for usage." >&2
+  exit 1
+fi
+
+if [[ ! -S "$SOCKET" ]]; then
+  echo "error: Morgoth socket not found at $SOCKET" >&2
+  echo "Is Morgoth running?" >&2
+  exit 1
+fi
+
+MSG=$(jq -n --arg to "$TO_UUID" --arg kind "$KIND" --arg p "$PAYLOAD" \
+     '{recipient: $to, kind: $kind, payload: $p}')
+echo "$MSG" | nc -U "$SOCKET"

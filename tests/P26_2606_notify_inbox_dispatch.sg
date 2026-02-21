@@ -1,0 +1,57 @@
+// P26_2606: notify kind in inbox is handled (dispatched differently from paste)
+// The inline dispatch loop handles notify by calling render_status_bar.
+// We verify the dispatch routing by simulating the dispatch logic.
+
+rite main() {
+    // Simulate the dispatch logic: paste goes to master_fd, notify is special
+    ≔ pipe = Sys·pipe();
+    ≔ mut inbox = [];
+    push(inbox, {kind: "paste",  payload: "hello\n"});
+    push(inbox, {kind: "notify", payload: "Build passed"});
+    push(inbox, {kind: "paste",  payload: "world\n"});
+
+    ≔ mut paste_count = 0;
+    ≔ mut notify_count = 0;
+    ≔ mut notify_text = "";
+
+    ≔ mut i = 0;
+    ⟳ i < len(inbox) {
+        ≔ msg = inbox[i];
+        ⎇ msg.kind == "paste" {
+            Sys·write(pipe.write_fd, msg.payload, len(msg.payload));
+            paste_count = paste_count + 1;
+        } ⎉ { ⎇ msg.kind == "notify" {
+            notify_count = notify_count + 1;
+            notify_text = msg.payload;
+        } }
+        i = i + 1;
+    }
+
+    ⎇ paste_count == 2 {
+        println("paste_count: OK");
+    } ⎉ {
+        println("paste_count: FAILED got=" + to_string(paste_count));
+    }
+
+    ⎇ notify_count == 1 {
+        println("notify_count: OK");
+    } ⎉ {
+        println("notify_count: FAILED got=" + to_string(notify_count));
+    }
+
+    ⎇ notify_text == "Build passed" {
+        println("notify_text: OK");
+    } ⎉ {
+        println("notify_text: FAILED got=" + notify_text);
+    }
+
+    // Verify paste content reached the fd (read without closing write end, like P26_2605 pattern)
+    ≔ chunk1 = Sys·read_string(pipe.read_fd, 6);
+    ≔ chunk2 = Sys·read_string(pipe.read_fd, 6);
+    ≔ got = chunk1 + chunk2;
+    ⎇ got == "hello\nworld\n" {
+        println("paste_to_fd: OK");
+    } ⎉ {
+        println("paste_to_fd: FAILED got=" + got);
+    }
+}

@@ -1,0 +1,44 @@
+// P26_2601: Socket message JSON format validation
+// Tests the message object that morgoth-send constructs and sends
+
+rite main() {
+    // Construct a paste message (what morgoth-send --to-uuid ... produces)
+    ≔ msg = {recipient: "uuid-bbb", kind: "paste", payload: "hello world\n"};
+    ≔ serialized = json_stringify(msg);
+    ≔ parsed = json_parse(serialized);
+
+    ⎇ type_of(parsed) == "map" {
+        println("msg_roundtrip: OK");
+    } ⎉ {
+        println("msg_roundtrip: FAILED type=" + type_of(parsed));
+    }
+
+    ⎇ map_get(parsed, "recipient") == "uuid-bbb" {
+        println("recipient_field: OK");
+    } ⎉ {
+        println("recipient_field: FAILED got=" + to_string(map_get(parsed, "recipient")));
+    }
+
+    ⎇ map_get(parsed, "kind") == "paste" {
+        println("kind_field: OK");
+    } ⎉ {
+        println("kind_field: FAILED got=" + to_string(map_get(parsed, "kind")));
+    }
+
+    ⎇ map_get(parsed, "payload") == "hello world\n" {
+        println("payload_field: OK");
+    } ⎉ {
+        println("payload_field: FAILED got=" + to_string(map_get(parsed, "payload")));
+    }
+
+    // Notify message with magic recipient
+    ≔ notify_msg = {recipient: "notify", kind: "notify", payload: "Build passed"};
+    ≔ notify_ser = json_stringify(notify_msg);
+    ≔ notify_parsed = json_parse(notify_ser);
+
+    ⎇ map_get(notify_parsed, "recipient") == "notify" ∧ map_get(notify_parsed, "kind") == "notify" {
+        println("notify_format: OK");
+    } ⎉ {
+        println("notify_format: FAILED");
+    }
+}

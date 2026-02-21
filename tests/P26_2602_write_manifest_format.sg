@@ -1,0 +1,64 @@
+// P26_2602: write_manifest produces valid JSON with required fields
+
+rite mq_socket_path()   { "/tmp/test_morgoth.sock" }
+rite mq_registry_path() { "/tmp/test_registry.json" }
+rite mq_fifo_dir()      { "/tmp/test_fifos" }
+
+rite write_manifest(panes) {
+    ≔ home = "/tmp";
+    ≔ mut n_claude = 0;
+    ≔ mut mi = 0;
+    ⟳ mi < len(panes) {
+        ⎇ panes[mi].role == "claude" ∧ panes[mi].alive == true { n_claude = n_claude + 1; }
+        mi = mi + 1;
+    }
+    ≔ content = "{\"version\":\"0.2.0\",\"socket\":\"" + mq_socket_path() +
+                "\",\"registry\":\"" + mq_registry_path() +
+                "\",\"fifos\":\"" + mq_fifo_dir() +
+                "\",\"claude_panes\":" + to_string(n_claude) + "}";
+    fs_write(home + "/.morgoth_manifest_test.json", content);
+}
+
+rite main() {
+    ≔ mut panes = [];
+    push(panes, {id: "uuid-a", role: "terminal", alive: true});
+    push(panes, {id: "uuid-b", role: "claude",   alive: true});
+
+    write_manifest(panes);
+
+    ≔ content = fs_read("/tmp/.morgoth_manifest_test.json");
+    ≔ parsed = json_parse(content);
+
+    ⎇ type_of(parsed) == "map" {
+        println("manifest_valid_json: OK");
+    } ⎉ {
+        println("manifest_valid_json: FAILED type=" + type_of(parsed));
+    }
+
+    ⎇ map_get(parsed, "version") == "0.2.0" {
+        println("version_field: OK");
+    } ⎉ {
+        println("version_field: FAILED got=" + to_string(map_get(parsed, "version")));
+    }
+
+    ⎇ map_get(parsed, "socket") == "/tmp/test_morgoth.sock" {
+        println("socket_field: OK");
+    } ⎉ {
+        println("socket_field: FAILED");
+    }
+
+    ⎇ map_get(parsed, "registry") == "/tmp/test_registry.json" {
+        println("registry_field: OK");
+    } ⎉ {
+        println("registry_field: FAILED");
+    }
+
+    ⎇ map_get(parsed, "fifos") == "/tmp/test_fifos" {
+        println("fifos_field: OK");
+    } ⎉ {
+        println("fifos_field: FAILED");
+    }
+
+    // Cleanup
+    fs_remove("/tmp/.morgoth_manifest_test.json");
+}
