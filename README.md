@@ -52,10 +52,6 @@ git clone https://github.com/Daemoniorum-LLC/morgoth
 sigil-lang/parser/target/release/sigil run morgoth/src/morgoth.sg
 ```
 
-When running inside tmux, `launch.sh` also starts `bin/claude-pipe.sh` in
-the background. This watches `~/.morgoth/claude-in.txt` and injects yanked
-text from copy mode into the focused Claude Code pane automatically.
-
 ## Key Bindings
 
 **Leader key:** `Ctrl-B` (configurable in `config.json`)
@@ -110,6 +106,19 @@ text from copy mode into the focused Claude Code pane automatically.
 | `^B S` | Save current pane layout to active profile |
 | `^B p` | Open profile picker |
 
+### Pane Reordering
+
+| Binding | Action |
+|---------|--------|
+| `^B <` | Swap focused pane with previous (focus follows) |
+| `^B >` | Swap focused pane with next (focus follows) |
+
+### Broadcast Mode
+
+| Binding | Action |
+|---------|--------|
+| `^B B` | Toggle broadcast — keystrokes go to **all** alive terminal panes |
+
 ### Other
 
 | Binding | Action |
@@ -162,7 +171,8 @@ The system monitor pane reads from:
 - `~/.claude/stats-cache.json` — context usage, token count, session cost
 - `~/.claude/current-task` — active task description (if present)
 
-It also runs `git rev-parse --abbrev-ref HEAD` to show the current branch.
+It also runs `git rev-parse --abbrev-ref HEAD` to show the current branch,
+and displays a live count of Claude-role panes and the MQ socket path.
 
 Morgoth includes a built-in pane message queue (MQ) that delivers text from
 copy mode directly to Claude Code panes — no external tools required.
@@ -175,6 +185,7 @@ flowchart LR
 
     EXT([external process]) -->|"FIFO write\n~/.morgoth/fifos/<uuid>"| M
     EXT2([JSON client]) -->|"Unix socket\n~/.morgoth/morgoth.sock"| M
+    EXT2 -->|"recipient=notify"| SB[Status Bar]
 ```
 
 **Copy mode yank** (`^B+[`, select, `Enter`) detects the focused Claude pane
@@ -182,19 +193,52 @@ by its OSC 2 title (any title containing "Claude" or "✳") and writes the
 selection directly to that pane's PTY master — it appears in Claude's input
 box instantly.
 
-**External producers** can inject text via:
-- **FIFO**: `echo "hello" > ~/.morgoth/fifos/<pane-uuid>`
-- **Unix socket** (JSON): `echo '{"recipient":"<uuid>","kind":"paste","payload":"hello"}' | nc -U ~/.morgoth/morgoth.sock`
+**External producers** can inject text via FIFO or socket:
 
-Pane UUIDs are listed in `~/.morgoth/registry.json` (updated on startup and
-pane lifecycle events). All messages are also appended to
+```bash
+# Paste text into a specific pane
+echo "hello" > ~/.morgoth/fifos/<pane-uuid>
+
+# Paste via socket (with UUID)
+echo '{"recipient":"<uuid>","kind":"paste","payload":"hello"}' \
+  | nc -U ~/.morgoth/morgoth.sock
+
+# Push a status bar notification (no UUID needed)
+echo '{"recipient":"notify","kind":"notify","payload":"Tests: 47 passed"}' \
+  | nc -U ~/.morgoth/morgoth.sock
+```
+
+**`bin/morgoth-send`** is a convenience wrapper that resolves pane roles to
+UUIDs automatically:
+
+```bash
+morgoth-send --to-role claude "implement the auth module"
+morgoth-send --kind notify "Deploy complete: v1.2.3"
+```
+
+**`bin/morgoth-list`** prints all active panes with their UUID, role, title,
+and FIFO path:
+
+```
+UUID                                   ROLE       TITLE            FIFO
+----                                   ----       -----            ----
+550e8400-e29b-41d4-a716-446655440000   claude     Claude Code      ~/.morgoth/fifos/550e...
+```
+
+Pane UUIDs, roles, and titles are listed in `~/.morgoth/registry.json`
+(updated on startup and OSC title changes). All messages are also appended to
 `~/.morgoth/messages.jsonl` and replayed into pane inboxes on the next
 Morgoth startup.
+
+A machine-readable manifest is written to `~/.morgoth/manifest.json` on
+startup and updated on every OSC title change. It contains the socket path,
+registry path, FIFO directory, and live Claude pane count — useful for agents
+and tools that need to discover Morgoth's endpoints programmatically.
 
 ## Tests
 
 ```bash
-# Run all 212 tests
+# Run all 222 tests
 ./run_tests.sh
 
 # Filter by phase

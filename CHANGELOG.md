@@ -7,7 +7,34 @@ model; each phase corresponds to a cohesive slice of functionality.
 
 ## v0.2.0 — 2026-02-20
 
-212/212 tests passing.
+222/222 tests passing.
+
+### Phase 26 — MQ Client Tooling, CONCLAVE Manifest, Broadcast, Notify, Swap (2026-02-20)
+
+Five features completing the MQ story and adding multi-pane workflow tools.
+
+- **MQ client scripts** (`bin/morgoth-send`, `bin/morgoth-list`): command-line
+  tools for sending messages and listing panes without knowing MQ internals.
+  `morgoth-send` accepts `--to-uuid`, `--to-role`, and `--kind notify`; resolves
+  roles to UUIDs via `~/.morgoth/registry.json` using `jq`.
+- **Registry title field**: `write_registry` now includes `title` in each pane
+  entry; called on every OSC 2 title change to keep the registry current
+- **CONCLAVE manifest** (`~/.morgoth/manifest.json`): new `write_manifest(panes)`
+  writes version, socket path, registry path, FIFO dir, and live Claude pane count
+  on startup and on title changes; monitor pane displays Claude pane count and
+  socket path in its MQ section
+- **Input broadcast** (`^B+B`): toggles `bcast` mode; when active, every
+  keystroke is written to **all** alive terminal panes simultaneously — essential
+  for running commands across multiple Claude Code instances. Red `BROADCAST`
+  pill appears on the status bar. (Note: `broadcast` is a reserved Sigil keyword;
+  field is named `bcast`.)
+- **Notification API** (`recipient:"notify"`): external processes push transient
+  status bar messages by sending `{"recipient":"notify","kind":"notify","payload":"..."}` to
+  the Unix socket — no pane UUID required. The inline inbox drain handler
+  (replacing the now-deleted `mq_dispatch_inbox` helper) routes notify-kind
+  messages to `render_status_bar` with screen access.
+- **Pane swap** (`^B+<`, `^B+>`): swap the focused pane with its array
+  neighbor, reordering the visual grid; focus follows the moved pane
 
 ### Phase 25 — Pane Message Queue (2026-02-20)
 
@@ -94,7 +121,7 @@ First public release. 200/200 tests passing.
 - Vim-style copy mode (`^B+[`)
 - `h`/`j`/`k`/`l`, `0`/`$`, `w`/`b`, `g`/`G`, `Ctrl-U`/`Ctrl-D` navigation
 - Character and line selection (`Space`, `V`)
-- Yank to OSC 52 clipboard (`Enter`) and `~/.morgoth/claude-in.txt`
+- Yank to OSC 52 clipboard (`Enter`) and delivery to Claude pane via MQ
 - Freeze render guard prevents screen corruption during copy mode
 
 ### Phase 9 — Dynamic Profiles (2026-02-19)

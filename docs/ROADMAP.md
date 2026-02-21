@@ -1,7 +1,7 @@
 # Morgoth Roadmap
 
-**Current version:** 0.1.0
-**Tests:** 200/200 passing
+**Current version:** 0.2.0
+**Tests:** 222/222 passing
 **Last updated:** 2026-02-20
 
 ---
@@ -34,6 +34,8 @@ All planned phases are complete. See [CHANGELOG.md](../CHANGELOG.md) for details
 | 22 | Claude integration (monitor pane, claude-pipe.sh) | Done |
 | 23 | Hardening ($SHELL, pane death notification, env vars) | Done |
 | 24 | Real-world bug fixes (CSI `<`, y-leak, picker crash) | Done |
+| 25 | Pane message queue (in-process MQ, FIFOs, Unix socket, registry) | Done |
+| 26 | MQ client tools, CONCLAVE manifest, broadcast, notify API, pane swap | Done |
 
 ---
 
@@ -56,10 +58,9 @@ without changing the common case (equal-size grid with `recompute_grid`).
 
 ### Session Restore: `y` Prompt UX
 
-The restore prompt reads one response byte, then drains stdin. If
-`claude-pipe.sh` injects old `claude-in.txt` content within the 3-second
-window, the prompt is auto-dismissed before the user can respond. Clearing
-`claude-in.txt` on Morgoth startup would prevent this.
+The restore prompt reads one response byte, then drains stdin. If an external
+process injects content into a pane FIFO within the 3-second window, the
+prompt could be dismissed before the user can respond.
 
 ### Plugin API
 
@@ -69,8 +70,8 @@ content. The monitor and a future git-status pane would both use this.
 
 ### Cross-Instance Orchestration
 
-The original Morgoth vision: send commands or context between Claude Code
-instances, with an orchestration layer for multi-agent workflows. The current
-Claude integration (copy yank → `claude-in.txt` → pipe → input box) is a
-manual first step. A fuller implementation would involve structured messaging
-between instances.
+Phase 25/26 established the MQ infrastructure (FIFOs, Unix socket, registry,
+`morgoth-send`). The next step is a higher-level orchestration protocol: an
+orchestrator pane that routes work items to available Claude instances, tracks
+completion, and redistributes on failure. The socket + notify API provide the
+messaging layer; what remains is the coordination logic above it.

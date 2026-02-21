@@ -200,9 +200,19 @@ The monitor pane reads from files (`~/.claude/stats-cache.json`,
 Claude Code processes. This decouples Morgoth from Claude Code's internals —
 any process that writes those files will be reflected in the monitor.
 
-### Claude Integration via Filesystem
+### Claude Integration via Message Queue
 
-Copy-mode yank writes to `~/.morgoth/claude-in.txt`. `bin/claude-pipe.sh`
-watches that file and injects content into Claude Code's input box via
-`tmux send-keys`. This requires Morgoth to run inside tmux but avoids any
-in-process IPC or Claude Code API dependency.
+Copy-mode yank delivers text directly to Claude Code panes through an
+in-process message queue. Each pane has a UUID and an inbox. The focused
+Claude pane is identified by its OSC 2 window title ("Claude" or "✳");
+yank writes to its inbox which is drained every event loop iteration.
+
+External processes reach panes through two interfaces:
+- **Per-pane FIFOs** (`~/.morgoth/fifos/<uuid>`): plain text, polled
+  non-blocking each iteration alongside PTY fds
+- **Unix domain socket** (`~/.morgoth/morgoth.sock`): structured JSON with
+  `recipient`, `kind`, and `payload` fields; `recipient:"notify"` is a
+  magic sentinel that pushes to the status bar instead of a pane inbox
+
+This eliminates the tmux dependency and the fragile file-watching approach.
+The `bin/morgoth-send` script provides a convenient CLI over the socket.
